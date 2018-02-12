@@ -10,19 +10,22 @@ All external library dependencies are included in the `vendor` directory. If you
 
 ## Compiling
 To compile the client:
- `$ go build .`
+
+`$ go build .`
 
 Now you should have a binary called `push-api-client`.
 
 
 If you want to reinstall the library dependencies, do:
- `$ glide install`
+
+`$ glide install`
 
 This creates the `vendor` directory with all the dependencies.
 
 
 ## Running
 To start the client do:
+
  `$ ./push-api-client -client-id=$CLIENT_ID -client-secret=$CLIENT_SECRET -color-pp`
 
 where `CLIENT_ID` and `CLIENT_SECRET` are the same that you already use to access the abios HTTP API.
