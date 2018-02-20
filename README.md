@@ -1,5 +1,5 @@
 # push-api-client
-A demo websocket client showing how to subscribe to Abios' data pushes 
+A demo websocket client showing how to subscribe to Abios' data pushes. Documentation for the Abios push API can be found [here](https://docs.abiosgaming.com/v2/reference#new-push-api-overview).
 
 ## Requirements
 You need to have valid Abios API keys to run this demo client. If you don't have any keys, please contact us at `info@abiosgaming.com` and we'll help you to get setup.
