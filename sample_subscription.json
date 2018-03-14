@@ -1,0 +1,10 @@
+{
+    "name": "sample_subscription6",
+    "description": "Listens to all events from series and match channels, for all games account has access to",
+    "filters": [{
+      "channel": "series"
+    },
+    {
+      "channel": "match"
+    }]
+  }

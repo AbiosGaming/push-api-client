@@ -15,7 +15,21 @@ import (
 	"time"
 
 	prettyjson "github.com/hokaccha/go-prettyjson"
-	uuid "github.com/satori/go.uuid"
+)
+
+// Custom status codes sent by the server for the 'close' command.
+// The websocket standard (RFC6455) allocates the
+// 4000-4999 range to application specific status codes.
+const (
+	CloseMissingAccessToken    = 4000 // Missing access token in ws setup request
+	CloseInvalidAccessToken    = 4001 // Invalid access token in ws setup request
+	CloseNotAuthorized         = 4002 // Client account does not have access to the push API
+	CloseMaxNumSubscribers     = 4003 // Max number of concurrent subscribers connected for client id
+	CloseMaxNumSubscriptions   = 4004 // Max number of registered subscriptions exist for client id
+	CloseInvalidReconnectToken = 4005 // Invalid reconnect token in ws setup request
+	CloseMissingSubscriptionID = 4006 // Missing subscription id in ws setup request
+	CloseUnknownSubscriptionID = 4007 // The supplied subscriber id in ws setup request does not exist in server
+	CloseInternalError         = 4500 // Unspecified error due to problem in server
 )
 
 const timestampMillisFormat = "2006-01-02 15:04:05.000"
@@ -76,10 +90,10 @@ func printJsonWithTag(tag string, msg []byte) {
 		v = o
 	}
 
-	if *colorPP {
-		s = coloredPrettyPrint(v)
-	} else {
+	if *noPPFlag {
 		s = stdPrettyPrint(v)
+	} else {
+		s = coloredPrettyPrint(v)
 	}
 
 	fmt.Printf("%s [%s] (%d bytes w/o pretty print):\n%s\n\n",
@@ -87,7 +101,7 @@ func printJsonWithTag(tag string, msg []byte) {
 }
 
 // Intercept 'ctrl-c' and remove the subscription before shutdown
-func setupSubscriptionRemoval(accessToken string, subscriptionID uuid.UUID) {
+func setupSubscriptionRemoval(accessToken string, subscriptionIDOrName string) {
 	sigs := make(chan os.Signal, 1)
 
 	// `signal.Notify` registers the given channel to
@@ -98,13 +112,13 @@ func setupSubscriptionRemoval(accessToken string, subscriptionID uuid.UUID) {
 	// signals.
 	go func() {
 		<-sigs
-		deleteSubscription(accessToken, subscriptionID)
+		deleteSubscription(accessToken, subscriptionIDOrName)
 		os.Exit(0)
 	}()
 }
 
 func doRequestAccessToken(clientID string, clientSecret string) (string, error) {
-	URL := *apiURL + "/oauth/access_token"
+	URL := *apiURLFlag + "/oauth/access_token"
 	form := url.Values{}
 	form.Add("client_id", clientID)
 	form.Add("client_secret", clientSecret)
@@ -147,4 +161,28 @@ func buildHTTPURLFromWSURL(wsURL string) string {
 	u.Scheme = scheme
 
 	return u.String()
+}
+
+func readSubscriptionSpec(fileName string) (Subscription, error) {
+	b, err := ioutil.ReadFile(fileName)
+	var sub Subscription
+	if err != nil {
+		return sub, err
+	}
+
+	err = json.Unmarshal(b, &sub)
+
+	return sub, err
+}
+
+func validateFlags() error {
+	if *clientIDFlag == "" || *clientSecretFlag == "" {
+		return fmt.Errorf("You need to provide both '-client-id' and '-client-secret'")
+	}
+
+	if *subscriptionFileFlag == "" && *subscriptionIDFlag == "" && *reconnectTokenFlag == "" {
+		return fmt.Errorf("You need to provide one of the options '-subscription-file', '-subscription-id' or '-reconnect-token'")
+	}
+
+	return nil
 }
