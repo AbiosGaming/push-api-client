@@ -124,7 +124,6 @@ func readInitMessage(conn *websocket.Conn) ([]byte, error) {
 func setupWebsocketConnection(accessToken string, reconnectToken uuid.UUID, subscriptionIDOrName string) *websocket.Conn {
 	// Connect the websocket to start receiving events that match
 	// the subscription filters we set up previously
-	fmt.Println("Setting up websocket connection. reconnect token", reconnectToken.String())
 	var conn *websocket.Conn
 	for {
 		var err error
