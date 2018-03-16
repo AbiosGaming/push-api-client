@@ -28,4 +28,4 @@ To start the client do:
 
  `$ ./push-api-client -client-id=$CLIENT_ID -client-secret=$CLIENT_SECRET -subscription-file=sample_subscription.json`
 
-where `CLIENT_ID` and `CLIENT_SECRET` are the same that you already use to access the abios HTTP API. The `sample_subscription.json` file contains a simple subscription specification that will listen to all events from the `series` and `matches` channels (for the games your account have access to).
+where `CLIENT_ID` and `CLIENT_SECRET` are the same that you already use to access the abios HTTP API. The `sample_subscription.json` file contains a simple subscription specification that will listen to all events from the `series` and `matches` channels (for the games your account has access to).
