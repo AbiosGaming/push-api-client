@@ -1,5 +1,5 @@
-hash: 323baae017bb9e30b182e2919d569de1bc406d0c556b8c8a51d0765ebdfd9d3e
-updated: 2018-02-12T11:39:27.182003878+01:00
+hash: 02ffed0514f47b8fa9ae23bc86d800de11ac229dc686446fbd85260b3b706ae0
+updated: 2018-03-22T14:52:24.276854112+01:00
 imports:
 - name: github.com/fatih/color
   version: 5df930a27be2502f99b292b7cc09ebad4d0891f4
@@ -15,6 +15,8 @@ imports:
   repo: https://github.com/mattn/go-isatty
 - name: github.com/satori/go.uuid
   version: f58768cc1a7a7e77a3bd49e98cdd21419399b6a3
+- name: github.com/spf13/pflag
+  version: e57e3eeb33f795204c1ca35f56c44f83227c6e66
 - name: golang.org/x/sys
   version: e24f485414aeafb646f6fca458b0bf869c0880a1
   repo: https://go.googlesource.com/sys
