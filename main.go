@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"flag"
 	"fmt"
 	"os"
 	"sync"
@@ -10,6 +9,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	uuid "github.com/satori/go.uuid"
+	flag "github.com/spf13/pflag"
 )
 
 var addrFlag = flag.String("addr", "wss://ws.abiosgaming.com/v0", "ws server address")
