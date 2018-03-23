@@ -117,7 +117,7 @@ func setupSubscriptionRemoval(accessToken string, subscriptionIDOrName string) {
 	}()
 }
 
-func doRequestAccessToken(clientID string, clientSecret string) (string, error) {
+func requestAccessToken(clientID string, clientSecret string) (string, error) {
 	URL := *apiURLFlag + "/oauth/access_token"
 	form := url.Values{}
 	form.Add("client_id", clientID)

@@ -13,7 +13,6 @@ import (
 )
 
 var addrFlag = flag.String("addr", "wss://ws.abiosgaming.com/v0", "ws server address")
-var accessTokenFlag = flag.String("access-token", "", "Use given access token instead of client id + secret")
 var subscriptionFileFlag = flag.String("subscription-file", "", "A file containing the subscription specification")
 var subscriptionIDFlag = flag.String("subscription-id", "", "The id of a subscription that has been registered previously")
 var clientIDFlag = flag.String("client-id", "", "Use client id for creating the access token")
@@ -94,22 +93,6 @@ func main() {
 	wg := sync.WaitGroup{}
 	wg.Add(1)
 	wg.Wait()
-}
-
-func requestAccessToken(clientID string, clientSecret string) (string, error) {
-	var at string
-	if *accessTokenFlag != "" {
-		// The access token was given as a command-line option, use it
-		at = *accessTokenFlag
-	} else {
-		var err error
-		at, err = doRequestAccessToken(clientID, clientSecret)
-		if err != nil {
-			return "", err
-		}
-	}
-
-	return at, nil
 }
 
 func readInitMessage(conn *websocket.Conn) ([]byte, error) {
