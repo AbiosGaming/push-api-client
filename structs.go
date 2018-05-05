@@ -4,9 +4,8 @@ import uuid "github.com/satori/go.uuid"
 
 // Base for all messages published to end-consumers
 type Message struct {
-	Channel       string    `json:"channel"`
-	SentTimestamp int64     `json:"sent_timestamp"`
-	UUID          uuid.UUID `json:"uuid"`
+	Channel string    `json:"channel"`
+	UUID    uuid.UUID `json:"uuid"`
 }
 
 type PushMessage struct {
