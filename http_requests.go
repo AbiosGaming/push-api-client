@@ -25,7 +25,7 @@ func connectToWebsocket(wsURL string, reconnectToken uuid.UUID, accessToken stri
 	if err == websocket.ErrBadHandshake {
 		fmt.Printf("%s [ERROR]: Failed to connect to WS url. Handshake status='%d'\n",
 			time.Now().Format(timestampMillisFormat), resp.StatusCode)
-		return nil, err
+		return nil, &WebsocketSetupHTTPError{HttpStatus: resp.StatusCode}
 	} else if err != nil {
 		fmt.Printf("%s [ERROR]: Failed to connect to WS url. Error='%s'\n",
 			time.Now().Format(timestampMillisFormat), err.Error())

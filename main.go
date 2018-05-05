@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"sync"
 	"time"
@@ -72,21 +73,24 @@ func main() {
 	// when we exit
 	setupSubscriptionRemoval(accessToken, subscriptionIDOrName)
 
+	// Parse the reconnect token given on the command line
+	// and initialize the global variable with it
+	reconnectToken, _ := uuid.FromString(*reconnectTokenFlag)
+
 	// Now we have an access token and a registered subscription id/name we want to
 	// connect to, the websocket can be created.
 	// This will connect and wait for the init message response from the server
-	reconnectToken, _ := uuid.FromString(*reconnectTokenFlag)
-	conn = setupWebsocketConnection(accessToken, reconnectToken, subscriptionIDOrName)
+	conn = setupPushServiceConnection(accessToken, reconnectToken, subscriptionIDOrName)
 	if conn == nil {
 		// Failed to connect
 		os.Exit(4)
 	}
 
-	// Start a separate process that sends a keep-alive ping now and then
+	// Start a separate process that sends a keep-alive ping now and then.
 	go keepAliveLoop()
 
 	// We start the infinite read loop as a separate go routine to simplify
-	// the reconnect logic
+	// the reconnect logic.
 	go messageReadLoop()
 
 	// Infinite wait here, use ctrl-c to kill program
@@ -95,59 +99,79 @@ func main() {
 	wg.Wait()
 }
 
-func readInitMessage(conn *websocket.Conn) ([]byte, error) {
-	_, message, err := conn.ReadMessage()
-	if err != nil {
-		return nil, err
-	}
-
-	return message, nil
-}
-
-func setupWebsocketConnection(accessToken string, reconnectToken uuid.UUID, subscriptionIDOrName string) *websocket.Conn {
+func setupPushServiceConnection(accessToken string, reconnectToken uuid.UUID, subscriptionIDOrName string) *websocket.Conn {
 	// Connect the websocket to start receiving events that match
 	// the subscription filters we set up previously
+	conn := websocketConnectLoop(accessToken, reconnectToken, subscriptionIDOrName)
+
+	// Read the 'init' message from server and handle any websocket setup errors
+	initMsg, err := readInitMessage(conn)
+	if err != nil {
+		os.Exit(1)
+	}
+
+	// The init message contains a reconnect token, store it in case we need
+	// to reconnect later
+	var m InitResponseMessage
+	json.Unmarshal(initMsg, &m)
+	currReconnectToken = m.ReconnectToken
+
+	printJsonWithTag("INIT MSG", initMsg)
+
+	return conn
+}
+
+func websocketConnectLoop(accessToken string, reconnectToken uuid.UUID, subscriptionIDOrName string) *websocket.Conn {
 	var conn *websocket.Conn
 	for {
 		var err error
 		conn, err = connectToWebsocket(*addrFlag, reconnectToken, accessToken, subscriptionIDOrName)
 		if err != nil {
-			// Couldn't connect, try again in a while
-			time.Sleep(time.Second * 5)
-			continue
+			switch v := err.(type) {
+			case *WebsocketSetupHTTPError:
+				if v.HttpStatus == http.StatusUnauthorized {
+					fmt.Printf("%s [WARNING]: Access token was not valid, requesting new.\n",
+						time.Now().Format(timestampMillisFormat))
+					accessToken, err = requestAccessToken(*clientIDFlag, *clientSecretFlag)
+					if err != nil {
+						fmt.Printf("%s [ERROR]: Access token request failed. Error='%s'\n",
+							time.Now().Format(timestampMillisFormat), err.Error())
+						os.Exit(1)
+					}
+				} else if v.HttpStatus == http.StatusTooManyRequests {
+					// Client has been rate-limited, wait a while before trying again
+					time.Sleep(time.Second * 30)
+				}
+			default:
+				// Couldn't connect, try again in a while
+				time.Sleep(time.Second * 5)
+			}
+		} else {
+			// Connected successfully
+			break
 		}
-
-		// Connected successfully
-		break
 	}
 
-	// The first message we receive from the push service is always the init
-	// on the 'system' channel
-	initMsgBytes, err := readInitMessage(conn)
+	return conn
+}
 
+func readInitMessage(conn *websocket.Conn) ([]byte, error) {
 	// The push api server will validate a number of things during websocket
 	// setup, e.g. that the access token is valid, user is authorized etc.
 	// If any validation fails, the server will close the websocket and set
 	// a custom error code.
+	_, message, err := conn.ReadMessage()
 	if closeErr, ok := err.(*websocket.CloseError); ok {
 		var errMsg string
 		switch closeErr.Code {
-		case CloseMissingAccessToken:
-			errMsg = "Missing access token in setup request"
-		case CloseInvalidAccessToken:
-			errMsg = "Invalid access token in setup request"
 		case CloseUnknownSubscriptionID:
 			errMsg = fmt.Sprintf("Subscription ID '%s' is not registered on server", subscriptionIDOrName)
 		case CloseMissingSubscriptionID:
 			errMsg = "Missing subscription ID or name in setup request"
-		case CloseInvalidReconnectToken:
-			errMsg = "The supplied reconnect token is invalid"
 		case CloseMaxNumSubscribers:
 			errMsg = "The max number of concurrent subscribers for the account has been exceeded"
 		case CloseMaxNumSubscriptions:
 			errMsg = "The max number of registered subscriptions for the account has been exceeded"
-		case CloseNotAuthorized:
-			errMsg = "This account does not have access to the push API service"
 		case CloseInternalError:
 			errMsg = "Unknown server error"
 		default:
@@ -156,39 +180,21 @@ func setupWebsocketConnection(accessToken string, reconnectToken uuid.UUID, subs
 
 		fmt.Printf("%s [ERROR]: Server closed connection: %s\n",
 			time.Now().Format(timestampMillisFormat), errMsg)
-		return nil
+		return nil, err
 	} else if err != nil {
 		// Websocket read encountered some other error, we won't try to recover
 		fmt.Printf("%s [ERROR]: Failed to read `init' message. Error='%s'\n",
 			time.Now().Format(timestampMillisFormat), err.Error())
-		return nil
+		return nil, err
 	}
 
-	// The init message contains a reconnect token, store it in case we need
-	// to reconnect later
-	var initMsg InitResponseMessage
-	json.Unmarshal(initMsgBytes, &initMsg)
-	currReconnectToken = initMsg.ReconnectToken
-
-	printJsonWithTag("INIT MSG", initMsgBytes)
-
-	return conn
+	return message, nil
 }
 
-func keepAliveLoop() {
-	for {
-		time.Sleep(time.Second * 30)
-		if conn != nil {
-			err := conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(3*time.Second))
-			if err != nil {
-				fmt.Printf("%s [ERROR]: Failed to send Ping message. Error='%s'\n",
-					time.Now().Format(timestampMillisFormat), err.Error())
-				continue
-			}
-		}
-	}
-}
-
+// This will read messages from the server and print them to stdout.
+// If the websocket is closed it will automatically re-establish the
+// connection using the reconnect token to ensure no messages were lost
+// during the disconnect.
 func messageReadLoop() {
 	// From here on we will start receiving push events that match our
 	// subscription filters
@@ -209,7 +215,7 @@ func messageReadLoop() {
 			}
 
 			// Reassign the global variable 'conn' with the new websocket handle
-			conn = setupWebsocketConnection(accessToken, currReconnectToken, subscriptionIDOrName)
+			conn = setupPushServiceConnection(accessToken, currReconnectToken, subscriptionIDOrName)
 			if conn == nil {
 				// Failed to connect
 				os.Exit(4)
@@ -237,6 +243,27 @@ func messageReadLoop() {
 		}
 
 		printJsonWithTag("MSG", message)
+	}
+}
+
+// The client needs to have a keep-alive loop for two reasons:
+//  1. Since the client does not send any other messages to the server
+//     it will never get a notification if the websocket is closed.
+//     The client only detects a closed websocket when it tries to write
+//     data to it. Sending a ping message ensures this happens.
+//  2. The server (or other network devices on the route to the server)
+//     will close connections that are idle for too long.
+func keepAliveLoop() {
+	for {
+		time.Sleep(time.Second * 30)
+		if conn != nil {
+			err := conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(3*time.Second))
+			if err != nil {
+				fmt.Printf("%s [ERROR]: Failed to send Ping message. Error='%s'\n",
+					time.Now().Format(timestampMillisFormat), err.Error())
+				continue
+			}
+		}
 	}
 }
 
