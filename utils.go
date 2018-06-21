@@ -67,6 +67,7 @@ func tryUnmarshalJSONAsPushMessage(jsonMsg []byte, printStruct bool) (PushMessag
 }
 
 func printJsonWithTag(tag string, msg []byte) {
+	var createdAt int64
 	var s []byte
 	var v interface{}
 	var o map[string]interface{}
@@ -87,6 +88,10 @@ func printJsonWithTag(tag string, msg []byte) {
 				time.Now().Format(timestampMillisFormat), err.Error(), o)
 		}
 
+		if ts, ok := o["created_timestamp"]; ok {
+			createdAt = int64(ts.(float64))
+		}
+
 		v = o
 	}
 
@@ -96,8 +101,14 @@ func printJsonWithTag(tag string, msg []byte) {
 		s = coloredPrettyPrint(v)
 	}
 
-	fmt.Printf("%s [%s] (%d bytes w/o pretty print):\n%s\n\n",
-		time.Now().Format(timestampMillisFormat), tag, len(msg), string(s))
+	if createdAt != 0 {
+		latency := roundDuration(time.Since(millisToTime(createdAt)), time.Millisecond)
+		fmt.Printf("%s [%s] (latency: %s; %d bytes w/o pretty print):\n%s\n\n",
+			time.Now().Format(timestampMillisFormat), tag, latency, len(msg), string(s))
+	} else {
+		fmt.Printf("%s [%s] (%d bytes w/o pretty print):\n%s\n\n",
+			time.Now().Format(timestampMillisFormat), tag, len(msg), string(s))
+	}
 }
 
 // Intercept 'ctrl-c' and remove the subscription before shutdown
@@ -185,4 +196,28 @@ func validateFlags() error {
 	}
 
 	return nil
+}
+
+func millisToTime(millis int64) time.Time {
+	return time.Unix(0, millis*int64(time.Millisecond))
+}
+
+// Taken from https://play.golang.org/p/QHocTHl8iR
+func roundDuration(d, r time.Duration) time.Duration {
+	if r <= 0 {
+		return d
+	}
+	neg := d < 0
+	if neg {
+		d = -d
+	}
+	if m := d % r; m+m < r {
+		d = d - m
+	} else {
+		d = d + r - m
+	}
+	if neg {
+		return -d
+	}
+	return d
 }
