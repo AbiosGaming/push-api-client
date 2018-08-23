@@ -1,6 +1,6 @@
 package main
 
-import uuid "github.com/satori/go.uuid"
+import "github.com/gofrs/uuid"
 
 // Base for all messages published to end-consumers
 type Message struct {

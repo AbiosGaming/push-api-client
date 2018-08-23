@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gofrs/uuid"
 	"github.com/gorilla/websocket"
-	uuid "github.com/satori/go.uuid"
 	flag "github.com/spf13/pflag"
 )
 

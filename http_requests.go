@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"time"
 
+	uuid "github.com/gofrs/uuid"
 	"github.com/gorilla/websocket"
-	uuid "github.com/satori/go.uuid"
 )
 
 func connectToWebsocket(wsURL string, reconnectToken uuid.UUID, accessToken string, subscriptionIDOrName string) (*websocket.Conn, error) {

@@ -1,25 +1,22 @@
-hash: 02ffed0514f47b8fa9ae23bc86d800de11ac229dc686446fbd85260b3b706ae0
-updated: 2018-03-22T14:52:24.276854112+01:00
+hash: 64be9ce69ebf6632b362fee16f721f4e13c57eb42ec8ca995a9a271db530685e
+updated: 2018-08-23T14:05:54.491785+02:00
 imports:
 - name: github.com/fatih/color
-  version: 5df930a27be2502f99b292b7cc09ebad4d0891f4
+  version: 2d684516a8861da43017284349b7e303e809ac21
+- name: github.com/gofrs/uuid
+  version: d41eeda0759468834c84365a32d1b1ec4264c75f
 - name: github.com/gorilla/websocket
-  version: ea4d1f681babbce9545c9c5f3d5194a789c89f5b
+  version: 3ff3320c2a1756a3691521efc290b4701575147c
 - name: github.com/hokaccha/go-prettyjson
-  version: e6b9231a2b1cc5798b336fdbf99c16cd8ad1e0c9
+  version: d229c224a219dcf41e9d2af4684b9782f33f5eb7
 - name: github.com/mattn/go-colorable
-  version: 5411d3eea5978e6cdc258b30de592b60df6aba96
-  repo: https://github.com/mattn/go-colorable
+  version: efa589957cd060542a26d2dd7832fd6a6c6c3ade
 - name: github.com/mattn/go-isatty
-  version: 57fdcb988a5c543893cc61bce354a6e24ab70022
-  repo: https://github.com/mattn/go-isatty
-- name: github.com/satori/go.uuid
-  version: f58768cc1a7a7e77a3bd49e98cdd21419399b6a3
+  version: 6ca4dbf54d38eea1a992b3c722a76a5d1c4cb25c
 - name: github.com/spf13/pflag
-  version: e57e3eeb33f795204c1ca35f56c44f83227c6e66
+  version: 9a97c102cda95a86cec2345a6f09f55a939babf5
 - name: golang.org/x/sys
-  version: e24f485414aeafb646f6fca458b0bf869c0880a1
-  repo: https://go.googlesource.com/sys
+  version: 3b58ed4ad3395d483fc92d5d14123ce2c3581fec
   subpackages:
   - unix
 testImports: []
