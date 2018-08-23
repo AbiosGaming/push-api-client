@@ -130,7 +130,7 @@ func websocketConnectLoop(accessToken string, reconnectToken uuid.UUID, subscrip
 			switch v := err.(type) {
 			case *WebsocketSetupHTTPError:
 				if v.HttpStatus == http.StatusUnauthorized {
-					fmt.Printf("%s [WARNING]: Access token was not valid, requesting new.\n",
+					fmt.Printf("%s [INFO]: Access token was not valid, requesting new.\n",
 						time.Now().Format(timestampMillisFormat))
 					accessToken, err = requestAccessToken(*clientIDFlag, *clientSecretFlag)
 					if err != nil {
@@ -140,11 +140,17 @@ func websocketConnectLoop(accessToken string, reconnectToken uuid.UUID, subscrip
 					}
 				} else if v.HttpStatus == http.StatusTooManyRequests {
 					// Client has been rate-limited, wait a while before trying again
-					time.Sleep(time.Second * 30)
+					backoffSeconds := 30
+					fmt.Printf("%s [INFO]: Client is rate-limited, retrying in %d seconds. Error='%s'\n",
+						time.Now().Format(timestampMillisFormat), backoffSeconds, err.Error())
+					time.Sleep(time.Second * time.Duration(backoffSeconds))
 				}
 			default:
 				// Couldn't connect, try again in a while
-				time.Sleep(time.Second * 5)
+				backoffSeconds := 5
+				fmt.Printf("%s [INFO]: Retrying in %d seconds. Error='%s'\n",
+					time.Now().Format(timestampMillisFormat), backoffSeconds, err.Error())
+				time.Sleep(time.Second * time.Duration(backoffSeconds))
 			}
 		} else {
 			// Connected successfully
