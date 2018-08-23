@@ -155,6 +155,16 @@ func websocketConnectLoop(accessToken string, reconnectToken uuid.UUID, subscrip
 	return conn
 }
 
+func disconnectWebsocket() {
+	if conn != nil {
+		err := conn.WriteControl(websocket.CloseMessage, []byte{}, time.Now().Add(3*time.Second))
+		if err != nil {
+			fmt.Printf("%s [ERROR]: Failed to send Close message. Error='%s'\n",
+				time.Now().Format(timestampMillisFormat), err.Error())
+		}
+	}
+}
+
 func readInitMessage(conn *websocket.Conn) ([]byte, error) {
 	// The push api server will validate a number of things during websocket
 	// setup, e.g. that the access token is valid, user is authorized etc.

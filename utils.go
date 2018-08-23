@@ -124,6 +124,7 @@ func setupSubscriptionRemoval(accessToken string, subscriptionIDOrName string) {
 	go func() {
 		<-sigs
 		deleteSubscription(accessToken, subscriptionIDOrName)
+		disconnectWebsocket()
 		os.Exit(0)
 	}()
 }
