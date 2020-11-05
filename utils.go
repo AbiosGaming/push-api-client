@@ -3,14 +3,11 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io/ioutil"
-	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -21,8 +18,8 @@ import (
 // The websocket standard (RFC6455) allocates the
 // 4000-4999 range to application specific status codes.
 const (
-	CloseMissingAccessToken    = 4000 // Missing access token in ws setup request
-	CloseInvalidAccessToken    = 4001 // Invalid access token in ws setup request
+	CloseMissingSecret         = 4000 // Missing access token in ws setup request
+	CloseInvalidSecret         = 4001 // Invalid access token in ws setup request
 	CloseNotAuthorized         = 4002 // Client account does not have access to the push API
 	CloseMaxNumSubscribers     = 4003 // Max number of concurrent subscribers connected for client id
 	CloseMaxNumSubscriptions   = 4004 // Max number of registered subscriptions exist for client id
@@ -112,7 +109,7 @@ func printJsonWithTag(tag string, msg []byte) {
 }
 
 // Intercept 'ctrl-c' and remove the subscription before shutdown
-func setupSubscriptionRemoval(accessToken string, subscriptionIDOrName string) {
+func setupSubscriptionRemoval(secret string, subscriptionIDOrName string) {
 	sigs := make(chan os.Signal, 1)
 
 	// `signal.Notify` registers the given channel to
@@ -123,47 +120,15 @@ func setupSubscriptionRemoval(accessToken string, subscriptionIDOrName string) {
 	// signals.
 	go func() {
 		<-sigs
-		deleteSubscription(accessToken, subscriptionIDOrName)
+		deleteSubscription(secret, subscriptionIDOrName)
 		disconnectWebsocket()
 		os.Exit(0)
 	}()
 }
 
-func requestAccessToken(clientID string, clientSecret string) (string, error) {
-	URL := *apiURLFlag + "/oauth/access_token"
-	form := url.Values{}
-	form.Add("client_id", clientID)
-	form.Add("client_secret", clientSecret)
-	form.Add("grant_type", "client_credentials")
-
-	req, err := http.NewRequest("POST", URL, strings.NewReader(form.Encode()))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
-
-	client := http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	respBody, _ := ioutil.ReadAll(resp.Body)
-
-	if resp.StatusCode != http.StatusOK {
-		return "", errors.New("")
-	}
-
-	var g AuthResp
-	json.Unmarshal(respBody, &g)
-
-	return g.AccessToken, nil
-}
-
 func buildHTTPURLFromWSURL(wsURL string) string {
 	u, _ := url.Parse(wsURL)
-	var scheme = ""
+	var scheme string
 	if u.Scheme == "wss" {
 		scheme = "https"
 	} else {
@@ -188,12 +153,12 @@ func readSubscriptionSpec(fileName string) (Subscription, error) {
 }
 
 func validateFlags() error {
-	if *clientIDFlag == "" || *clientSecretFlag == "" {
-		return fmt.Errorf("You need to provide both '-client-id' and '-client-secret'")
+	if *clientSecretFlag == "" {
+		return fmt.Errorf("You need to provide your secret key with '--secret'")
 	}
 
 	if *subscriptionFileFlag == "" && *subscriptionIDFlag == "" && *reconnectTokenFlag == "" {
-		return fmt.Errorf("You need to provide one of the options '-subscription-file', '-subscription-id' or '-reconnect-token'")
+		return fmt.Errorf("You need to provide one of the options '--subscription-file', '--subscription-id' or '--reconnect-token'")
 	}
 
 	return nil

@@ -3,7 +3,7 @@
   "description": "Listens to all events from series and match channels, for all games account has access to",
   "filters": [
     {
-      "channel": "live_dota"
+      "channel": "series_updates"
     }
   ]
 }

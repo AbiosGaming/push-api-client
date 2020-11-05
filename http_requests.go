@@ -12,9 +12,9 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-func connectToWebsocket(wsURL string, reconnectToken uuid.UUID, accessToken string, subscriptionIDOrName string) (*websocket.Conn, error) {
+func connectToWebsocket(wsURL string, reconnectToken uuid.UUID, secret string, subscriptionIDOrName string) (*websocket.Conn, error) {
 	URL := wsURL + "?"
-	URL = URL + "access_token=" + accessToken
+	URL = URL + "secret=" + secret
 	URL = URL + "&subscription_id=" + subscriptionIDOrName
 	if reconnectToken != uuid.Nil {
 		URL = URL + "&reconnect_token=" + reconnectToken.String()
@@ -35,10 +35,10 @@ func connectToWebsocket(wsURL string, reconnectToken uuid.UUID, accessToken stri
 	return conn, nil
 }
 
-func fetchPushServiceConfig(accessToken string) ([]byte, error) {
+func fetchPushServiceConfig(secret string) ([]byte, error) {
 	URL := buildHTTPURLFromWSURL(*addrFlag)
 	URL = URL + "/config"
-	URL = URL + "?access_token=" + accessToken
+	URL = URL + "?secret=" + secret
 
 	resp, err := http.Get(URL)
 	if err != nil {
@@ -55,10 +55,10 @@ func fetchPushServiceConfig(accessToken string) ([]byte, error) {
 	return respBody, err
 }
 
-func fetchSubscriptions(accessToken string) ([]byte, error) {
+func fetchSubscriptions(secret string) ([]byte, error) {
 	URL := buildHTTPURLFromWSURL(*addrFlag)
 	URL = URL + "/subscription"
-	URL = URL + "?access_token=" + accessToken
+	URL = URL + "?secret=" + secret
 
 	resp, err := http.Get(URL)
 	if err != nil {
@@ -75,10 +75,10 @@ func fetchSubscriptions(accessToken string) ([]byte, error) {
 	return respBody, err
 }
 
-func registerSubscription(accessToken string, sub Subscription) (uuid.UUID, bool, error) {
+func registerSubscription(secret string, sub Subscription) (uuid.UUID, bool, error) {
 	URL := buildHTTPURLFromWSURL(*addrFlag)
 	URL = URL + "/subscription"
-	URL = URL + "?access_token=" + accessToken
+	URL = URL + "?secret=" + secret
 
 	j, _ := json.Marshal(sub)
 
@@ -121,7 +121,7 @@ func registerSubscription(accessToken string, sub Subscription) (uuid.UUID, bool
 		// Server didn't set a valid ID in the 'Location' header, this should never happen
 		return uuid.Nil, true, fmt.Errorf("Subscription with name already exists, but failed to retrieve ID")
 	} else if resp.StatusCode != http.StatusOK {
-		return uuid.Nil, false, fmt.Errorf("Unexpected status code: %d", resp.StatusCode)
+		return uuid.Nil, false, fmt.Errorf("Unexpected status code: %d. Response message: %s", resp.StatusCode, string(respBody))
 	}
 
 	var s struct {
@@ -132,10 +132,10 @@ func registerSubscription(accessToken string, sub Subscription) (uuid.UUID, bool
 	return s.ID, false, err
 }
 
-func updateSubscription(accessToken string, sub Subscription) (uuid.UUID, bool, error) {
+func updateSubscription(secret string, sub Subscription) (uuid.UUID, bool, error) {
 	URL := buildHTTPURLFromWSURL(*addrFlag)
 	URL = URL + "/subscription/" + sub.ID.String()
-	URL = URL + "?access_token=" + accessToken
+	URL = URL + "?access_token=" + secret
 
 	j, _ := json.Marshal(sub)
 
@@ -168,10 +168,10 @@ func updateSubscription(accessToken string, sub Subscription) (uuid.UUID, bool, 
 	return s.ID, false, err
 }
 
-func deleteSubscription(accessToken string, subscriptionIDOrName string) error {
+func deleteSubscription(secret string, subscriptionIDOrName string) error {
 	URL := buildHTTPURLFromWSURL(*addrFlag)
 	URL = URL + "/subscription/" + subscriptionIDOrName
-	URL = URL + "?access_token=" + accessToken
+	URL = URL + "?secret=" + secret
 
 	req, err := http.NewRequest("DELETE", URL, nil)
 	if err != nil {

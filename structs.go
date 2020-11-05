@@ -42,9 +42,3 @@ type SubscriptionFilter struct {
 	SeriesID int    `json:"series_id,omitempty"`
 	MatchID  int    `json:"match_id,omitempty"`
 }
-
-type AuthResp struct {
-	AccessToken string `json:"access_token"`
-	ExpiresIn   int    `json:"expires_in"`
-	TokenType   string `json:"token_type"`
-}
