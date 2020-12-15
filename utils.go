@@ -64,7 +64,7 @@ func tryUnmarshalJSONAsPushMessage(jsonMsg []byte, printStruct bool) (PushMessag
 }
 
 func printJsonWithTag(tag string, msg []byte) {
-	var createdAt int64
+	var createdAt time.Time
 	var s []byte
 	var v interface{}
 	var o map[string]interface{}
@@ -85,8 +85,11 @@ func printJsonWithTag(tag string, msg []byte) {
 				time.Now().Format(timestampMillisFormat), err.Error(), o)
 		}
 
-		if ts, ok := o["created_timestamp"]; ok {
-			createdAt = int64(ts.(float64))
+		if ts, ok := o["created"]; ok {
+			s, ok := ts.(string)
+			if ok {
+				createdAt, _ = time.Parse(time.RFC3339, s)
+			}
 		}
 
 		v = o
@@ -98,8 +101,8 @@ func printJsonWithTag(tag string, msg []byte) {
 		s = coloredPrettyPrint(v)
 	}
 
-	if createdAt != 0 {
-		latency := roundDuration(time.Since(millisToTime(createdAt)), time.Millisecond)
+	if !createdAt.IsZero() {
+		latency := roundDuration(time.Since(createdAt), time.Millisecond)
 		fmt.Printf("%s [%s] (latency: %s; %d bytes w/o pretty print):\n%s\n\n",
 			time.Now().Format(timestampMillisFormat), tag, latency, len(msg), string(s))
 	} else {
@@ -162,10 +165,6 @@ func validateFlags() error {
 	}
 
 	return nil
-}
-
-func millisToTime(millis int64) time.Time {
-	return time.Unix(0, millis*int64(time.Millisecond))
 }
 
 // Taken from https://play.golang.org/p/QHocTHl8iR
