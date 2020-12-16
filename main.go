@@ -38,7 +38,7 @@ func main() {
 
 	// Let's look at our configuration. The information is only printed
 	// to the terminal for debugging purposes, not used in any other way
-	config, err := fetchPushServiceConfig(secret)
+	config, err := fetchPushServiceConfig()
 	if err != nil {
 		log.Fatalln("[ERROR] Config request failed. Error: ", err)
 	}
@@ -46,7 +46,7 @@ func main() {
 
 	// Fetch all subscriptions currently registered with the push service
 	// only printed for debugging purposes, not used in any other way
-	subs, err := fetchSubscriptions(secret)
+	subs, err := fetchSubscriptions()
 	if err != nil {
 		log.Fatalln("[ERROR] Subscriptions list request failed. Error: ", err)
 	}
@@ -127,7 +127,7 @@ func websocketConnectLoop(secret string, reconnectToken uuid.UUID, subscriptionI
 	var conn *websocket.Conn
 	for {
 		var err error
-		conn, err = connectToWebsocket(*addrFlag, reconnectToken, secret, subscriptionIDOrName)
+		conn, err = connectToWebsocket(*addrFlag, reconnectToken, subscriptionIDOrName)
 		if err != nil {
 			switch v := err.(type) {
 			case *WebsocketSetupHTTPError:
@@ -271,7 +271,7 @@ func registerOrUpdateSubscription(secret string) (string, bool, error) {
 
 		// Register the subscription specification with the push service
 		var subscriptionID uuid.UUID
-		subscriptionID, alreadyExists, err = registerSubscription(secret, sub)
+		subscriptionID, alreadyExists, err = registerSubscription(sub)
 		if err != nil {
 			return "", false, fmt.Errorf("Subscription registration request failed. Error: %v", err)
 		}
@@ -280,7 +280,7 @@ func registerOrUpdateSubscription(secret string) (string, bool, error) {
 			log.Printf("[INFO]: A subscription with name '%s' already exists, updating it.\n", sub.Name)
 
 			sub.ID = subscriptionID
-			_, _, err = updateSubscription(*clientSecretFlag, sub)
+			_, _, err = updateSubscription(sub)
 			if err != nil {
 				return "", false, fmt.Errorf("Failed to update subscription. Error: %v", err)
 			}

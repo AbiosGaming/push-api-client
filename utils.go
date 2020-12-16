@@ -123,13 +123,17 @@ func setupSubscriptionRemoval(secret string, subscriptionIDOrName string) {
 	// signals.
 	go func() {
 		<-sigs
-		err := deleteSubscription(secret, subscriptionIDOrName)
+		err := deleteSubscription(subscriptionIDOrName)
 		if err != nil {
 			log.Println("[ERROR] Failed to delete subscription. Error: ", err)
+		} else {
+			log.Println("[INFO] Deleted subscription ", subscriptionIDOrName)
 		}
 		err = disconnectWebsocket()
 		if err != nil {
 			log.Println("[ERROR] Failed to do clean websocket disconnect. Error: ", err)
+		} else {
+			log.Println("[INFO] Disconnected websocket connection")
 		}
 
 		// Exit with success code

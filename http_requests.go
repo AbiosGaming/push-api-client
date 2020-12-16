@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net/http"
+	"time"
 
 	uuid "github.com/gofrs/uuid"
 	"github.com/gorilla/websocket"
@@ -16,15 +18,22 @@ type WebsocketSetupHTTPError struct {
 	HttpStatus int
 }
 
-func connectToWebsocket(wsURL string, reconnectToken uuid.UUID, secret string, subscriptionIDOrName string) (*websocket.Conn, error) {
-	URL := wsURL + "?"
-	URL = URL + "secret=" + secret
-	URL = URL + "&subscription_id=" + subscriptionIDOrName
+var httpClient = &http.Client{
+	Timeout: time.Second * 10,
+}
+
+func connectToWebsocket(wsURL string, reconnectToken uuid.UUID, subscriptionIDOrName string) (*websocket.Conn, error) {
+	URL := wsURL + "?subscription_id=" + subscriptionIDOrName
 	if reconnectToken != uuid.Nil {
 		URL = URL + "&reconnect_token=" + reconnectToken.String()
 	}
+
+	// Set the Abios secret as a header in the request
+	var h http.Header = make(http.Header)
+	h["Abios-Secret"] = []string{*clientSecretFlag}
+
 	var dialer *websocket.Dialer
-	conn, resp, err := dialer.Dial(URL, nil)
+	conn, resp, err := dialer.Dial(URL, h)
 
 	if err != nil {
 		if resp != nil {
@@ -37,12 +46,28 @@ func connectToWebsocket(wsURL string, reconnectToken uuid.UUID, secret string, s
 	return conn, nil
 }
 
-func fetchPushServiceConfig(secret string) ([]byte, error) {
-	URL := buildHTTPURLFromWSURL(*addrFlag)
-	URL = URL + "/config"
-	URL = URL + "?secret=" + secret
+func createAuthenticatedRequest(method string, endpoint string, body io.Reader) (*http.Request, error) {
+	url := buildHTTPURLFromWSURL(*addrFlag)
+	url = url + endpoint
 
-	resp, err := http.Get(URL)
+	req, err := http.NewRequest(method, url, body)
+	if err != nil {
+		return nil, err
+	}
+
+	// Set the Abios secret as a header in the request
+	req.Header["Abios-Secret"] = []string{*clientSecretFlag}
+
+	return req, nil
+}
+
+func fetchPushServiceConfig() ([]byte, error) {
+	req, err := createAuthenticatedRequest(http.MethodGet, "/config", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -57,12 +82,13 @@ func fetchPushServiceConfig(secret string) ([]byte, error) {
 	return respBody, err
 }
 
-func fetchSubscriptions(secret string) ([]byte, error) {
-	URL := buildHTTPURLFromWSURL(*addrFlag)
-	URL = URL + "/subscription"
-	URL = URL + "?secret=" + secret
+func fetchSubscriptions() ([]byte, error) {
+	req, err := createAuthenticatedRequest(http.MethodGet, "/subscription", nil)
+	if err != nil {
+		return nil, err
+	}
 
-	resp, err := http.Get(URL)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -77,21 +103,17 @@ func fetchSubscriptions(secret string) ([]byte, error) {
 	return respBody, err
 }
 
-func registerSubscription(secret string, sub Subscription) (uuid.UUID, bool, error) {
-	URL := buildHTTPURLFromWSURL(*addrFlag)
-	URL = URL + "/subscription"
-	URL = URL + "?secret=" + secret
-
+func registerSubscription(sub Subscription) (uuid.UUID, bool, error) {
 	j, _ := json.Marshal(sub)
 
-	req, err := http.NewRequest("POST", URL, bytes.NewBuffer(j))
+	req, err := createAuthenticatedRequest(http.MethodPost, "/subscription", bytes.NewBuffer(j))
 	if err != nil {
 		return uuid.Nil, false, err
 	}
+
 	req.Header.Add("Content-Type", "application/json")
 
-	client := http.Client{}
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return uuid.Nil, false, err
 	}
@@ -134,21 +156,18 @@ func registerSubscription(secret string, sub Subscription) (uuid.UUID, bool, err
 	return s.ID, false, err
 }
 
-func updateSubscription(secret string, sub Subscription) (uuid.UUID, bool, error) {
-	URL := buildHTTPURLFromWSURL(*addrFlag)
-	URL = URL + "/subscription/" + sub.ID.String()
-	URL = URL + "?access_token=" + secret
-
+func updateSubscription(sub Subscription) (uuid.UUID, bool, error) {
+	endpoint := "/subscription/" + sub.ID.String()
 	j, _ := json.Marshal(sub)
 
-	req, err := http.NewRequest("PUT", URL, bytes.NewBuffer(j))
+	req, err := createAuthenticatedRequest(http.MethodPut, endpoint, bytes.NewBuffer(j))
 	if err != nil {
 		return uuid.Nil, false, err
 	}
+
 	req.Header.Add("Content-Type", "application/json")
 
-	client := http.Client{}
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return uuid.Nil, false, err
 	}
@@ -170,19 +189,16 @@ func updateSubscription(secret string, sub Subscription) (uuid.UUID, bool, error
 	return s.ID, false, err
 }
 
-func deleteSubscription(secret string, subscriptionIDOrName string) error {
-	URL := buildHTTPURLFromWSURL(*addrFlag)
-	URL = URL + "/subscription/" + subscriptionIDOrName
-	URL = URL + "?secret=" + secret
-
-	req, err := http.NewRequest("DELETE", URL, nil)
+func deleteSubscription(subscriptionIDOrName string) error {
+	endpoint := "/subscription/" + subscriptionIDOrName
+	req, err := createAuthenticatedRequest(http.MethodDelete, endpoint, nil)
 	if err != nil {
 		return err
 	}
+
 	req.Header.Add("Content-Type", "application/json")
 
-	client := http.Client{}
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -193,5 +209,4 @@ func deleteSubscription(secret string, subscriptionIDOrName string) error {
 	}
 
 	return nil
-
 }
