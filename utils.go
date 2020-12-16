@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net/url"
 	"os"
 	"os/signal"
@@ -29,34 +30,30 @@ const (
 	CloseInternalError         = 4500 // Unspecified error due to problem in server
 )
 
-const timestampMillisFormat = "2006-01-02 15:04:05.000"
-
-func stdPrettyPrint(v interface{}) []byte {
+func stdPrettyPrint(v interface{}) ([]byte, error) {
 	s, err := json.MarshalIndent(v, "", "   ")
 	if err != nil {
-		fmt.Printf("%s [ERROR]: Failed to marshal struct. Error=%s\nmsg=%+v\n",
-			time.Now().Format(timestampMillisFormat), err.Error(), v)
+		return nil, fmt.Errorf("Failed to marshal struct. Error: %v, Msg: %v", err, v)
 	}
 
-	return s
+	return s, nil
 }
 
-func coloredPrettyPrint(v interface{}) []byte {
+func coloredPrettyPrint(v interface{}) ([]byte, error) {
 	s, err := prettyjson.Marshal(v)
 	if err != nil {
-		fmt.Printf("%s [ERROR]: Failed to marshal struct. Error=%s\nmsg=%+v\n",
-			time.Now().Format(timestampMillisFormat), err.Error(), v)
+		return nil, fmt.Errorf("Failed to marshal struct. Error: %v, Msg: %v", err, v)
 	}
 
-	return s
+	return s, nil
 }
 
 func tryUnmarshalJSONAsPushMessage(jsonMsg []byte, printStruct bool) (PushMessage, error) {
 	var msg PushMessage
 	err := json.Unmarshal(jsonMsg, &msg)
 	if err != nil {
-		e := fmt.Errorf("Error when unmarshalling incoming json.\nError=%s\nJSON:%d",
-			err.Error(), jsonMsg)
+		e := fmt.Errorf("Error when unmarshalling incoming json. Error:%v, JSON:%s",
+			err.Error(), string(jsonMsg))
 		return PushMessage{}, e
 	}
 
@@ -73,16 +70,16 @@ func printJsonWithTag(tag string, msg []byte) {
 	if bytes.HasPrefix(msg, []byte("[")) {
 		err := json.Unmarshal(msg, &a)
 		if err != nil {
-			fmt.Printf("%s [ERROR]: Failed to unmarshal message. Error=%s\nmsg=%+v\n",
-				time.Now().Format(timestampMillisFormat), err.Error(), a)
+			log.Printf("[ERROR] Failed to unmarshal message. Error: %s, Msg: %+v\n", err, a)
+			return
 		}
 
 		v = a
 	} else {
 		err := json.Unmarshal(msg, &o)
 		if err != nil {
-			fmt.Printf("%s [ERROR]: Failed to unmarshal message. Error=%s\nmsg=%+v\n",
-				time.Now().Format(timestampMillisFormat), err.Error(), o)
+			log.Printf("[ERROR] Failed to unmarshal message. Error: %s, Msg: %+v\n", err, o)
+			return
 		}
 
 		if ts, ok := o["created"]; ok {
@@ -95,19 +92,22 @@ func printJsonWithTag(tag string, msg []byte) {
 		v = o
 	}
 
+	var err error
 	if *noPPFlag {
-		s = stdPrettyPrint(v)
+		s, err = stdPrettyPrint(v)
 	} else {
-		s = coloredPrettyPrint(v)
+		s, err = coloredPrettyPrint(v)
+	}
+	if err != nil {
+		log.Println("[ERROR] Failed to prettyprint message. Error:", s)
+		return
 	}
 
 	if !createdAt.IsZero() {
 		latency := roundDuration(time.Since(createdAt), time.Millisecond)
-		fmt.Printf("%s [%s] (latency: %s; %d bytes w/o pretty print):\n%s\n\n",
-			time.Now().Format(timestampMillisFormat), tag, latency, len(msg), string(s))
+		log.Printf("[%s] (latency: %s; %d bytes w/o pretty print):\n%s\n\n", tag, latency, len(msg), string(s))
 	} else {
-		fmt.Printf("%s [%s] (%d bytes w/o pretty print):\n%s\n\n",
-			time.Now().Format(timestampMillisFormat), tag, len(msg), string(s))
+		log.Printf("[%s] (%d bytes w/o pretty print):\n%s\n\n", tag, len(msg), string(s))
 	}
 }
 
@@ -123,8 +123,16 @@ func setupSubscriptionRemoval(secret string, subscriptionIDOrName string) {
 	// signals.
 	go func() {
 		<-sigs
-		deleteSubscription(secret, subscriptionIDOrName)
-		disconnectWebsocket()
+		err := deleteSubscription(secret, subscriptionIDOrName)
+		if err != nil {
+			log.Println("[ERROR] Failed to delete subscription. Error: ", err)
+		}
+		err = disconnectWebsocket()
+		if err != nil {
+			log.Println("[ERROR] Failed to do clean websocket disconnect. Error: ", err)
+		}
+
+		// Exit with success code
 		os.Exit(0)
 	}()
 }

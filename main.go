@@ -3,8 +3,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
-	"os"
 	"sync"
 	"time"
 
@@ -25,13 +25,13 @@ var currReconnectToken uuid.UUID
 var conn *websocket.Conn
 
 func main() {
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+
 	flag.Parse()
 
 	err := validateFlags()
 	if err != nil {
-		fmt.Printf("%s [ERROR]: %s\n", time.Now().Format(timestampMillisFormat),
-			err.Error())
-		os.Exit(1)
+		log.Fatalln("[ERROR]", err)
 	}
 
 	secret := *clientSecretFlag
@@ -40,9 +40,7 @@ func main() {
 	// to the terminal for debugging purposes, not used in any other way
 	config, err := fetchPushServiceConfig(secret)
 	if err != nil {
-		fmt.Printf("%s [ERROR]: Config request failed. Error='%s'\n",
-			time.Now().Format(timestampMillisFormat), err.Error())
-		os.Exit(2)
+		log.Fatalln("[ERROR] Config request failed. Error: ", err)
 	}
 	printJsonWithTag("PUSH CONFIG", config)
 
@@ -50,10 +48,9 @@ func main() {
 	// only printed for debugging purposes, not used in any other way
 	subs, err := fetchSubscriptions(secret)
 	if err != nil {
-		fmt.Printf("%s [ERROR]: Subscriptions list request failed. Error='%s'\n",
-			time.Now().Format(timestampMillisFormat), err.Error())
-		os.Exit(2)
+		log.Fatalln("[ERROR] Subscriptions list request failed. Error: ", err)
 	}
+
 	printJsonWithTag("EXISTING SUBSCRIPTIONS", subs)
 
 	// If a subscription spec file has been supplied it will be registered
@@ -61,7 +58,10 @@ func main() {
 	// already has been registered the existing subscription is updated
 	// with the content of the supplied file.
 	var wasUpdated bool
-	subscriptionIDOrName, wasUpdated = registerOrUpdateSubscription(secret)
+	subscriptionIDOrName, wasUpdated, err = registerOrUpdateSubscription(secret)
+	if err != nil {
+		log.Fatalln("[ERROR] Failed to register or update subscription. Error: ", err)
+	}
 
 	// For this test client we'll delete the subscription
 	// when we exit.
@@ -77,10 +77,9 @@ func main() {
 	// Now we have an access token and a registered subscription id/name we want to
 	// connect to, the websocket can be created.
 	// This will connect and wait for the init message response from the server
-	conn = setupPushServiceConnection(secret, reconnectToken, subscriptionIDOrName)
-	if conn == nil {
-		// Failed to connect
-		os.Exit(4)
+	conn, err = setupPushServiceConnection(secret, reconnectToken, subscriptionIDOrName)
+	if err != nil {
+		log.Fatalln("[ERROR] Failed to connect to push service. Error: ", err)
 	}
 
 	// Start a separate process that sends a keep-alive ping now and then.
@@ -96,15 +95,18 @@ func main() {
 	wg.Wait()
 }
 
-func setupPushServiceConnection(secret string, reconnectToken uuid.UUID, subscriptionIDOrName string) *websocket.Conn {
+func setupPushServiceConnection(secret string, reconnectToken uuid.UUID, subscriptionIDOrName string) (*websocket.Conn, error) {
 	// Connect the websocket to start receiving events that match
 	// the subscription filters we set up previously
-	conn := websocketConnectLoop(secret, reconnectToken, subscriptionIDOrName)
+	conn, err := websocketConnectLoop(secret, reconnectToken, subscriptionIDOrName)
+	if err != nil {
+		return nil, err
+	}
 
 	// Read the 'init' message from server and handle any websocket setup errors
 	initMsg, err := readInitMessage(conn)
 	if err != nil {
-		os.Exit(1)
+		return nil, fmt.Errorf("Failed to read initial message from server. Error: %v", err)
 	}
 
 	// The init message contains a reconnect token, store it in case we need
@@ -112,17 +114,16 @@ func setupPushServiceConnection(secret string, reconnectToken uuid.UUID, subscri
 	var m InitResponseMessage
 	err = json.Unmarshal(initMsg, &m)
 	if err != nil {
-		fmt.Printf("%s [ERROR]: Failed to unmarshal init response. Error='%s'\n",
-			time.Now().Format(timestampMillisFormat), err.Error())
+		return nil, fmt.Errorf("Failed to unmarshal init response. Error: %v", err)
 	}
 	currReconnectToken = m.ReconnectToken
 
 	printJsonWithTag("INIT MSG", initMsg)
 
-	return conn
+	return conn, nil
 }
 
-func websocketConnectLoop(secret string, reconnectToken uuid.UUID, subscriptionIDOrName string) *websocket.Conn {
+func websocketConnectLoop(secret string, reconnectToken uuid.UUID, subscriptionIDOrName string) (*websocket.Conn, error) {
 	var conn *websocket.Conn
 	for {
 		var err error
@@ -131,21 +132,17 @@ func websocketConnectLoop(secret string, reconnectToken uuid.UUID, subscriptionI
 			switch v := err.(type) {
 			case *WebsocketSetupHTTPError:
 				if v.HttpStatus == http.StatusUnauthorized {
-					fmt.Printf("%s [ERROR]: Failed to authorize client. Error='%s'\n",
-						time.Now().Format(timestampMillisFormat), err.Error())
-					os.Exit(1)
+					return nil, fmt.Errorf("Failed to authorize client. Error: %v", err)
 				} else if v.HttpStatus == http.StatusTooManyRequests {
 					// Client has been rate-limited, wait a while before trying again
 					backoffSeconds := 30
-					fmt.Printf("%s [INFO]: Client is rate-limited, retrying in %d seconds. Error='%s'\n",
-						time.Now().Format(timestampMillisFormat), backoffSeconds, err.Error())
+					log.Println(fmt.Sprintf("[WARN] Client is rate-limited, retrying in %d seconds. Error: ", backoffSeconds), err)
 					time.Sleep(time.Second * time.Duration(backoffSeconds))
 				}
 			default:
 				// Couldn't connect, try again in a while
 				backoffSeconds := 5
-				fmt.Printf("%s [INFO]: Retrying in %d seconds. Error='%s'\n",
-					time.Now().Format(timestampMillisFormat), backoffSeconds, err.Error())
+				log.Println(fmt.Sprintf("[ERROR]: Couldn't connect, retrying in %d seconds. Error:", backoffSeconds), err)
 				time.Sleep(time.Second * time.Duration(backoffSeconds))
 			}
 		} else {
@@ -154,17 +151,18 @@ func websocketConnectLoop(secret string, reconnectToken uuid.UUID, subscriptionI
 		}
 	}
 
-	return conn
+	return conn, nil
 }
 
-func disconnectWebsocket() {
+func disconnectWebsocket() error {
 	if conn != nil {
 		err := conn.WriteControl(websocket.CloseMessage, []byte{}, time.Now().Add(3*time.Second))
 		if err != nil {
-			fmt.Printf("%s [ERROR]: Failed to send Close message. Error='%s'\n",
-				time.Now().Format(timestampMillisFormat), err.Error())
+			return fmt.Errorf("Failed to send Close message. Error: %v", err)
 		}
 	}
+
+	return nil
 }
 
 func readInitMessage(conn *websocket.Conn) ([]byte, error) {
@@ -190,13 +188,8 @@ func readInitMessage(conn *websocket.Conn) ([]byte, error) {
 			errMsg = fmt.Sprintf("Server sent unrecognized error code %d", closeErr.Code)
 		}
 
-		fmt.Printf("%s [ERROR]: Server closed connection: %s\n",
-			time.Now().Format(timestampMillisFormat), errMsg)
-		return nil, err
+		return nil, fmt.Errorf("Server closed connection with message: %s", errMsg)
 	} else if err != nil {
-		// Websocket read encountered some other error, we won't try to recover
-		fmt.Printf("%s [ERROR]: Failed to read `init' message. Error='%s'\n",
-			time.Now().Format(timestampMillisFormat), err.Error())
 		return nil, err
 	}
 
@@ -215,32 +208,26 @@ func messageReadLoop(secret string) {
 
 		// If the websocket is closed we need to reconnect
 		if closeErr, ok := err.(*websocket.CloseError); ok {
-			fmt.Printf("%s [INFO]: Websocket was closed, starting reconnect loop. Reason='%s'\n",
-				time.Now().Format(timestampMillisFormat), closeErr.Error())
+			log.Println("[INFO] Websocket was closed, starting reconnect loop. Reason: ", closeErr)
 
 			// Reassign the global variable 'conn' with the new websocket handle
-			conn = setupPushServiceConnection(secret, currReconnectToken, subscriptionIDOrName)
-			if conn == nil {
-				// Failed to connect
-				os.Exit(4)
+			conn, err = setupPushServiceConnection(secret, currReconnectToken, subscriptionIDOrName)
+			if err != nil {
+				log.Fatalln("[ERROR] Failed to connect to push service. Error: ", err)
 			}
 
 			// Continue the message read loop
 			continue
 		} else if err != nil {
 			// Websocket read encountered some other error, we won't try to recover
-			fmt.Printf("%s [ERROR]: Failed to read message. Error='%s'\n",
-				time.Now().Format(timestampMillisFormat), err.Error())
-
-			os.Exit(3)
+			log.Fatalln("[ERROR] Failed to read message. Error: ", err)
 		}
 
 		// Sanity check that the JSON can be marshalled into the correct message
 		// format
 		_, err = tryUnmarshalJSONAsPushMessage(message, false)
 		if err != nil {
-			fmt.Printf("%s [ERROR]: Failed to unmarshal to message struct. Error='%s', Message='%s'\n",
-				time.Now().Format(timestampMillisFormat), err.Error(), message)
+			log.Printf("[ERROR] Failed to unmarshal incoming message to message struct. Error: '%s', Message: '%s'\n", err.Error(), message)
 
 			// Ignore message and keep reading from websocket
 			continue
@@ -263,15 +250,14 @@ func keepAliveLoop() {
 		if conn != nil {
 			err := conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(3*time.Second))
 			if err != nil {
-				fmt.Printf("%s [ERROR]: Failed to send Ping message. Error='%s'\n",
-					time.Now().Format(timestampMillisFormat), err.Error())
+				log.Println("[ERROR] Failed to send Ping message. Error: ", err)
 				continue
 			}
 		}
 	}
 }
 
-func registerOrUpdateSubscription(secret string) (string, bool) {
+func registerOrUpdateSubscription(secret string) (string, bool, error) {
 	var subscriptionIDOrName string
 	var sub Subscription
 	var err error
@@ -280,32 +266,29 @@ func registerOrUpdateSubscription(secret string) (string, bool) {
 		// Read subscription specification from file
 		sub, err = readSubscriptionSpec(*subscriptionFileFlag)
 		if err != nil {
-			fmt.Printf("%s [ERROR]: Could not read subscription spec from file. Error='%s'\n",
-				time.Now().Format(timestampMillisFormat), err.Error())
-			return "", false
+			return "", false, fmt.Errorf("Could not read subscription spec from file. Error=%v", err)
 		}
 
 		// Register the subscription specification with the push service
 		var subscriptionID uuid.UUID
 		subscriptionID, alreadyExists, err = registerSubscription(secret, sub)
 		if err != nil {
-			fmt.Printf("%s [ERROR]: Subscription registration request failed. Error='%s'\n",
-				time.Now().Format(timestampMillisFormat), err.Error())
-			return "", false
+			return "", false, fmt.Errorf("Subscription registration request failed. Error: %v", err)
 		}
 
 		if alreadyExists {
-			fmt.Printf("%s [INFO]: A subscription with name '%s' already exists, updating it.\n",
-				time.Now().Format(timestampMillisFormat), sub.Name)
+			log.Printf("[INFO]: A subscription with name '%s' already exists, updating it.\n", sub.Name)
+
 			sub.ID = subscriptionID
-			updateSubscription(*clientSecretFlag, sub)
+			_, _, err = updateSubscription(*clientSecretFlag, sub)
+			if err != nil {
+				return "", false, fmt.Errorf("Failed to update subscription. Error: %v", err)
+			}
 		} else {
 			if sub.Name != "" {
-				fmt.Printf("%s [INFO]: Registered the subscription with name '%s' (ID=%s).\n",
-					time.Now().Format(timestampMillisFormat), sub.Name, subscriptionID)
+				log.Printf("[INFO]: Registered the subscription with name '%s' (ID=%s).\n", sub.Name, subscriptionID)
 			} else {
-				fmt.Printf("%s [INFO]: Registered the subscription. ID=%s.\n",
-					time.Now().Format(timestampMillisFormat), subscriptionID)
+				log.Printf("[INFO]: Registered the subscription. ID=%s.\n", subscriptionID)
 			}
 		}
 
@@ -314,5 +297,5 @@ func registerOrUpdateSubscription(secret string) (string, bool) {
 		subscriptionIDOrName = *subscriptionIDFlag
 	}
 
-	return subscriptionIDOrName, alreadyExists
+	return subscriptionIDOrName, alreadyExists, nil
 }

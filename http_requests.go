@@ -6,11 +6,15 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
-	"time"
 
 	uuid "github.com/gofrs/uuid"
 	"github.com/gorilla/websocket"
 )
+
+type WebsocketSetupHTTPError struct {
+	error
+	HttpStatus int
+}
 
 func connectToWebsocket(wsURL string, reconnectToken uuid.UUID, secret string, subscriptionIDOrName string) (*websocket.Conn, error) {
 	URL := wsURL + "?"
@@ -22,14 +26,12 @@ func connectToWebsocket(wsURL string, reconnectToken uuid.UUID, secret string, s
 	var dialer *websocket.Dialer
 	conn, resp, err := dialer.Dial(URL, nil)
 
-	if err == websocket.ErrBadHandshake {
-		fmt.Printf("%s [ERROR]: Failed to connect to WS url. Handshake status='%d'\n",
-			time.Now().Format(timestampMillisFormat), resp.StatusCode)
-		return nil, &WebsocketSetupHTTPError{HttpStatus: resp.StatusCode}
-	} else if err != nil {
-		fmt.Printf("%s [ERROR]: Failed to connect to WS url. Error='%s'\n",
-			time.Now().Format(timestampMillisFormat), err.Error())
-		return nil, err
+	if err != nil {
+		if resp != nil {
+			return nil, WebsocketSetupHTTPError{HttpStatus: resp.StatusCode, error: err}
+		} else {
+			return nil, err
+		}
 	}
 
 	return conn, nil
