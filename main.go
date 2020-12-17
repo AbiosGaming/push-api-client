@@ -3,8 +3,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
-	"os"
 	"sync"
 	"time"
 
@@ -13,65 +13,68 @@ import (
 	flag "github.com/spf13/pflag"
 )
 
-var addrFlag = flag.String("addr", "wss://ws.abiosgaming.com/v0", "ws server address")
+// Command-line options
 var subscriptionFileFlag = flag.String("subscription-file", "", "A file containing the subscription specification")
 var subscriptionIDFlag = flag.String("subscription-id", "", "The id of a subscription that has been registered previously")
-var clientIDFlag = flag.String("client-id", "", "Use client id for creating the access token")
-var clientSecretFlag = flag.String("client-secret", "", "Use client secret for creating the access token")
 var reconnectTokenFlag = flag.String("reconnect-token", "", "Use token to reconnect to previous subscriber state")
 var noPPFlag = flag.Bool("no-pp", false, "Disable colorized pretty-print of JSON data")
+var addrFlag = flag.String("addr", "wss://ws.abiosgaming.com/v0", "ws server address")
+
+// Command-line options only useful with v3 authentication
+var clientV3SecretFlag = flag.String("secret", "", "The v3 authentication secret")
+
+// Command-line options only useful with v2 authentication
 var apiURLFlag = flag.String("access-token-url", "https://api.abiosgaming.com/v2", "URL for the access token creation")
+var clientV2IDFlag = flag.String("client-id", "", "Use client id for creating the access token, only for v2 authentication")
+var clientV2SecretFlag = flag.String("client-secret", "", "The v2 authentication secret")
 
 var subscriptionIDOrName string
 var currReconnectToken uuid.UUID
 var conn *websocket.Conn
 
 func main() {
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+
 	flag.Parse()
 
 	err := validateFlags()
 	if err != nil {
-		fmt.Printf("%s [ERROR]: %s\n", time.Now().Format(timestampMillisFormat),
-			err.Error())
-		os.Exit(1)
-	}
-	// Create an access token from the client id and secret given on the command line
-	accessToken, err := requestAccessToken(*clientIDFlag, *clientSecretFlag)
-	if err != nil {
-		fmt.Printf("%s [ERROR]: Access token request failed. Error='%s'\n",
-			time.Now().Format(timestampMillisFormat), err.Error())
-		os.Exit(2)
+		log.Fatalln("[ERROR] ", err)
 	}
 
 	// Let's look at our configuration. The information is only printed
 	// to the terminal for debugging purposes, not used in any other way
-	config, err := fetchPushServiceConfig(accessToken)
+	config, err := fetchPushServiceConfig()
 	if err != nil {
-		fmt.Printf("%s [ERROR]: Config request failed. Error='%s'\n",
-			time.Now().Format(timestampMillisFormat), err.Error())
-		os.Exit(2)
+		log.Fatalln("[ERROR] Config request failed. Error: ", err)
 	}
 	printJsonWithTag("PUSH CONFIG", config)
 
 	// Fetch all subscriptions currently registered with the push service
 	// only printed for debugging purposes, not used in any other way
-	subs, err := fetchSubscriptions(accessToken)
+	subs, err := fetchSubscriptions()
 	if err != nil {
-		fmt.Printf("%s [ERROR]: Subscriptions list request failed. Error='%s'\n",
-			time.Now().Format(timestampMillisFormat), err.Error())
-		os.Exit(2)
+		log.Fatalln("[ERROR] Subscriptions list request failed. Error: ", err)
 	}
+
 	printJsonWithTag("EXISTING SUBSCRIPTIONS", subs)
 
 	// If a subscription spec file has been supplied it will be registered
 	// with the push service. If the subscription has a name and that name
 	// already has been registered the existing subscription is updated
 	// with the content of the supplied file.
-	subscriptionIDOrName = registerOrUpdateSubscription(accessToken)
+	var wasUpdated bool
+	subscriptionIDOrName, wasUpdated, err = registerOrUpdateSubscription()
+	if err != nil {
+		log.Fatalln("[ERROR] Failed to register or update subscription. Error: ", err)
+	}
 
 	// For this test client we'll delete the subscription
-	// when we exit
-	setupSubscriptionRemoval(accessToken, subscriptionIDOrName)
+	// when we exit.
+	// But make sure to NOT delete it if the subscription already existed.
+	if !wasUpdated {
+		setupSubscriptionRemoval(subscriptionIDOrName)
+	}
 
 	// Parse the reconnect token given on the command line
 	// and initialize the global variable with it
@@ -80,10 +83,9 @@ func main() {
 	// Now we have an access token and a registered subscription id/name we want to
 	// connect to, the websocket can be created.
 	// This will connect and wait for the init message response from the server
-	conn = setupPushServiceConnection(accessToken, reconnectToken, subscriptionIDOrName)
-	if conn == nil {
-		// Failed to connect
-		os.Exit(4)
+	conn, err = setupPushServiceConnection(reconnectToken, subscriptionIDOrName)
+	if err != nil {
+		log.Fatalln("[ERROR] Failed to connect to push service. Error: ", err)
 	}
 
 	// Start a separate process that sends a keep-alive ping now and then.
@@ -99,57 +101,56 @@ func main() {
 	wg.Wait()
 }
 
-func setupPushServiceConnection(accessToken string, reconnectToken uuid.UUID, subscriptionIDOrName string) *websocket.Conn {
+func setupPushServiceConnection(reconnectToken uuid.UUID, subscriptionIDOrName string) (*websocket.Conn, error) {
 	// Connect the websocket to start receiving events that match
 	// the subscription filters we set up previously
-	conn := websocketConnectLoop(accessToken, reconnectToken, subscriptionIDOrName)
+	conn, err := websocketConnectLoop(reconnectToken, subscriptionIDOrName)
+	if err != nil {
+		return nil, err
+	}
 
 	// Read the 'init' message from server and handle any websocket setup errors
 	initMsg, err := readInitMessage(conn)
 	if err != nil {
-		os.Exit(1)
+		return nil, fmt.Errorf("Failed to read initial message from server. Error: %v", err)
 	}
 
 	// The init message contains a reconnect token, store it in case we need
 	// to reconnect later
 	var m InitResponseMessage
-	json.Unmarshal(initMsg, &m)
+	err = json.Unmarshal(initMsg, &m)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to unmarshal init response. Error: %v", err)
+	}
 	currReconnectToken = m.ReconnectToken
 
 	printJsonWithTag("INIT MSG", initMsg)
 
-	return conn
+	return conn, nil
 }
 
-func websocketConnectLoop(accessToken string, reconnectToken uuid.UUID, subscriptionIDOrName string) *websocket.Conn {
+func websocketConnectLoop(reconnectToken uuid.UUID, subscriptionIDOrName string) (*websocket.Conn, error) {
 	var conn *websocket.Conn
 	for {
 		var err error
-		conn, err = connectToWebsocket(*addrFlag, reconnectToken, accessToken, subscriptionIDOrName)
+		conn, err = connectToWebsocket(*addrFlag, reconnectToken, subscriptionIDOrName)
 		if err != nil {
 			switch v := err.(type) {
 			case *WebsocketSetupHTTPError:
 				if v.HttpStatus == http.StatusUnauthorized {
-					fmt.Printf("%s [INFO]: Access token was not valid, requesting new.\n",
-						time.Now().Format(timestampMillisFormat))
-					accessToken, err = requestAccessToken(*clientIDFlag, *clientSecretFlag)
-					if err != nil {
-						fmt.Printf("%s [ERROR]: Access token request failed. Error='%s'\n",
-							time.Now().Format(timestampMillisFormat), err.Error())
-						os.Exit(1)
-					}
+					return nil, fmt.Errorf("Failed to authorize client. Error: %v", err)
 				} else if v.HttpStatus == http.StatusTooManyRequests {
 					// Client has been rate-limited, wait a while before trying again
 					backoffSeconds := 30
-					fmt.Printf("%s [INFO]: Client is rate-limited, retrying in %d seconds. Error='%s'\n",
-						time.Now().Format(timestampMillisFormat), backoffSeconds, err.Error())
+					log.Println(fmt.Sprintf("[WARN] Client is rate-limited, retrying in %d seconds. Error: ", backoffSeconds), err)
 					time.Sleep(time.Second * time.Duration(backoffSeconds))
+				} else {
+					return nil, fmt.Errorf("Websocket connection setup failed. Error: %v", v.error)
 				}
 			default:
 				// Couldn't connect, try again in a while
 				backoffSeconds := 5
-				fmt.Printf("%s [INFO]: Retrying in %d seconds. Error='%s'\n",
-					time.Now().Format(timestampMillisFormat), backoffSeconds, err.Error())
+				log.Println(fmt.Sprintf("[ERROR]: Couldn't connect, retrying in %d seconds. Error:", backoffSeconds), err)
 				time.Sleep(time.Second * time.Duration(backoffSeconds))
 			}
 		} else {
@@ -158,17 +159,18 @@ func websocketConnectLoop(accessToken string, reconnectToken uuid.UUID, subscrip
 		}
 	}
 
-	return conn
+	return conn, nil
 }
 
-func disconnectWebsocket() {
+func disconnectWebsocket() error {
 	if conn != nil {
 		err := conn.WriteControl(websocket.CloseMessage, []byte{}, time.Now().Add(3*time.Second))
 		if err != nil {
-			fmt.Printf("%s [ERROR]: Failed to send Close message. Error='%s'\n",
-				time.Now().Format(timestampMillisFormat), err.Error())
+			return fmt.Errorf("Failed to send Close message. Error: %v", err)
 		}
 	}
+
+	return nil
 }
 
 func readInitMessage(conn *websocket.Conn) ([]byte, error) {
@@ -194,13 +196,8 @@ func readInitMessage(conn *websocket.Conn) ([]byte, error) {
 			errMsg = fmt.Sprintf("Server sent unrecognized error code %d", closeErr.Code)
 		}
 
-		fmt.Printf("%s [ERROR]: Server closed connection: %s\n",
-			time.Now().Format(timestampMillisFormat), errMsg)
-		return nil, err
+		return nil, fmt.Errorf("Server closed connection with message: %s", errMsg)
 	} else if err != nil {
-		// Websocket read encountered some other error, we won't try to recover
-		fmt.Printf("%s [ERROR]: Failed to read `init' message. Error='%s'\n",
-			time.Now().Format(timestampMillisFormat), err.Error())
 		return nil, err
 	}
 
@@ -219,40 +216,26 @@ func messageReadLoop() {
 
 		// If the websocket is closed we need to reconnect
 		if closeErr, ok := err.(*websocket.CloseError); ok {
-			fmt.Printf("%s [INFO]: Websocket was closed, starting reconnect loop. Reason='%s'\n",
-				time.Now().Format(timestampMillisFormat), closeErr.Error())
-
-			// Make sure to generate a new access token as the original one may be too old
-			accessToken, err := requestAccessToken(*clientIDFlag, *clientSecretFlag)
-			if err != nil {
-				fmt.Printf("%s [ERROR]: Access token request failed. Error='%s'\n",
-					time.Now().Format(timestampMillisFormat), err.Error())
-				os.Exit(2)
-			}
+			log.Println("[INFO] Websocket was closed, starting reconnect loop. Reason: ", closeErr)
 
 			// Reassign the global variable 'conn' with the new websocket handle
-			conn = setupPushServiceConnection(accessToken, currReconnectToken, subscriptionIDOrName)
-			if conn == nil {
-				// Failed to connect
-				os.Exit(4)
+			conn, err = setupPushServiceConnection(currReconnectToken, subscriptionIDOrName)
+			if err != nil {
+				log.Fatalln("[ERROR] Failed to connect to push service. Error: ", err)
 			}
 
 			// Continue the message read loop
 			continue
 		} else if err != nil {
 			// Websocket read encountered some other error, we won't try to recover
-			fmt.Printf("%s [ERROR]: Failed to read message. Error='%s'\n",
-				time.Now().Format(timestampMillisFormat), err.Error())
-
-			os.Exit(3)
+			log.Fatalln("[ERROR] Failed to read message. Error: ", err)
 		}
 
 		// Sanity check that the JSON can be marshalled into the correct message
 		// format
 		_, err = tryUnmarshalJSONAsPushMessage(message, false)
 		if err != nil {
-			fmt.Printf("%s [ERROR]: Failed to unmarshal to message struct. Error='%s', Message='%s'\n",
-				time.Now().Format(timestampMillisFormat), err.Error(), message)
+			log.Printf("[ERROR] Failed to unmarshal incoming message to message struct. Error: '%s', Message: '%s'\n", err.Error(), message)
 
 			// Ignore message and keep reading from websocket
 			continue
@@ -275,47 +258,45 @@ func keepAliveLoop() {
 		if conn != nil {
 			err := conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(3*time.Second))
 			if err != nil {
-				fmt.Printf("%s [ERROR]: Failed to send Ping message. Error='%s'\n",
-					time.Now().Format(timestampMillisFormat), err.Error())
+				log.Println("[ERROR] Failed to send Ping message. Error: ", err)
 				continue
 			}
 		}
 	}
 }
 
-func registerOrUpdateSubscription(accessToken string) string {
+func registerOrUpdateSubscription() (string, bool, error) {
 	var subscriptionIDOrName string
 	var sub Subscription
 	var err error
+	var alreadyExists bool
 	if *subscriptionFileFlag != "" {
 		// Read subscription specification from file
 		sub, err = readSubscriptionSpec(*subscriptionFileFlag)
 		if err != nil {
-			fmt.Printf("%s [ERROR]: Could not read subscription spec from file. Error='%s'\n",
-				time.Now().Format(timestampMillisFormat), err.Error())
-			return ""
+			return "", false, fmt.Errorf("Could not read subscription spec from file. Error=%v", err)
 		}
 
 		// Register the subscription specification with the push service
-		subscriptionID, alreadyExists, err := registerSubscription(accessToken, sub)
+		var subscriptionID uuid.UUID
+		subscriptionID, alreadyExists, err = registerSubscription(sub)
 		if err != nil {
-			fmt.Printf("%s [ERROR]: Subscription registration request failed. Error='%s'\n",
-				time.Now().Format(timestampMillisFormat), err.Error())
-			return ""
+			return "", false, fmt.Errorf("Subscription registration request failed. Error: %v", err)
 		}
 
 		if alreadyExists {
-			fmt.Printf("%s [INFO]: A subscription with name '%s' already exists, updating it.\n",
-				time.Now().Format(timestampMillisFormat), sub.Name)
+			log.Printf("[INFO]: A subscription with name '%s' already exists, updating it.\n", sub.Name)
+
 			sub.ID = subscriptionID
-			updateSubscription(accessToken, sub)
+			_, _, err = updateSubscription(sub)
+			if err != nil {
+				return "", false, fmt.Errorf("Failed to update subscription. Error: %v", err)
+			}
 		} else {
 			if sub.Name != "" {
-				fmt.Printf("%s [INFO]: Registered the subscription with name '%s' (ID=%s).\n",
-					time.Now().Format(timestampMillisFormat), sub.Name, subscriptionID)
+				log.Printf("[INFO]: Registered the subscription with name '%s' (ID=%s).\n", sub.Name, subscriptionID)
 			} else {
-				fmt.Printf("%s [INFO]: Registered the subscription. ID=%s.\n",
-					time.Now().Format(timestampMillisFormat), subscriptionID)
+				log.Printf("[INFO]: Registered the subscription. ID=%s.\n", subscriptionID)
 			}
 		}
 
@@ -324,5 +305,5 @@ func registerOrUpdateSubscription(accessToken string) string {
 		subscriptionIDOrName = *subscriptionIDFlag
 	}
 
-	return subscriptionIDOrName
+	return subscriptionIDOrName, alreadyExists, nil
 }

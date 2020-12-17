@@ -3,9 +3,9 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -21,8 +21,8 @@ import (
 // The websocket standard (RFC6455) allocates the
 // 4000-4999 range to application specific status codes.
 const (
-	CloseMissingAccessToken    = 4000 // Missing access token in ws setup request
-	CloseInvalidAccessToken    = 4001 // Invalid access token in ws setup request
+	CloseMissingSecret         = 4000 // Missing access token in ws setup request
+	CloseInvalidSecret         = 4001 // Invalid access token in ws setup request
 	CloseNotAuthorized         = 4002 // Client account does not have access to the push API
 	CloseMaxNumSubscribers     = 4003 // Max number of concurrent subscribers connected for client id
 	CloseMaxNumSubscriptions   = 4004 // Max number of registered subscriptions exist for client id
@@ -32,34 +32,30 @@ const (
 	CloseInternalError         = 4500 // Unspecified error due to problem in server
 )
 
-const timestampMillisFormat = "2006-01-02 15:04:05.000"
-
-func stdPrettyPrint(v interface{}) []byte {
+func stdPrettyPrint(v interface{}) ([]byte, error) {
 	s, err := json.MarshalIndent(v, "", "   ")
 	if err != nil {
-		fmt.Printf("%s [ERROR]: Failed to marshal struct. Error=%s\nmsg=%+v\n",
-			time.Now().Format(timestampMillisFormat), err.Error(), v)
+		return nil, fmt.Errorf("Failed to marshal struct. Error: %v, Msg: %v", err, v)
 	}
 
-	return s
+	return s, nil
 }
 
-func coloredPrettyPrint(v interface{}) []byte {
+func coloredPrettyPrint(v interface{}) ([]byte, error) {
 	s, err := prettyjson.Marshal(v)
 	if err != nil {
-		fmt.Printf("%s [ERROR]: Failed to marshal struct. Error=%s\nmsg=%+v\n",
-			time.Now().Format(timestampMillisFormat), err.Error(), v)
+		return nil, fmt.Errorf("Failed to marshal struct. Error: %v, Msg: %v", err, v)
 	}
 
-	return s
+	return s, nil
 }
 
 func tryUnmarshalJSONAsPushMessage(jsonMsg []byte, printStruct bool) (PushMessage, error) {
 	var msg PushMessage
 	err := json.Unmarshal(jsonMsg, &msg)
 	if err != nil {
-		e := fmt.Errorf("Error when unmarshalling incoming json.\nError=%s\nJSON:%d",
-			err.Error(), jsonMsg)
+		e := fmt.Errorf("Error when unmarshalling incoming json. Error:%v, JSON:%s",
+			err.Error(), string(jsonMsg))
 		return PushMessage{}, e
 	}
 
@@ -67,7 +63,7 @@ func tryUnmarshalJSONAsPushMessage(jsonMsg []byte, printStruct bool) (PushMessag
 }
 
 func printJsonWithTag(tag string, msg []byte) {
-	var createdAt int64
+	var createdAt time.Time
 	var s []byte
 	var v interface{}
 	var o map[string]interface{}
@@ -76,43 +72,49 @@ func printJsonWithTag(tag string, msg []byte) {
 	if bytes.HasPrefix(msg, []byte("[")) {
 		err := json.Unmarshal(msg, &a)
 		if err != nil {
-			fmt.Printf("%s [ERROR]: Failed to unmarshal message. Error=%s\nmsg=%+v\n",
-				time.Now().Format(timestampMillisFormat), err.Error(), a)
+			log.Printf("[ERROR] Failed to unmarshal message. Error: %s, Msg: %+v\n", err, a)
+			return
 		}
 
 		v = a
 	} else {
 		err := json.Unmarshal(msg, &o)
 		if err != nil {
-			fmt.Printf("%s [ERROR]: Failed to unmarshal message. Error=%s\nmsg=%+v\n",
-				time.Now().Format(timestampMillisFormat), err.Error(), o)
+			log.Printf("[ERROR] Failed to unmarshal message. Error: %s, Msg: %+v\n", err, o)
+			return
 		}
 
-		if ts, ok := o["created_timestamp"]; ok {
-			createdAt = int64(ts.(float64))
+		if ts, ok := o["created"]; ok {
+			s, ok := ts.(string)
+			if ok {
+				createdAt, _ = time.Parse(time.RFC3339, s)
+			}
 		}
 
 		v = o
 	}
 
+	var err error
 	if *noPPFlag {
-		s = stdPrettyPrint(v)
+		s, err = stdPrettyPrint(v)
 	} else {
-		s = coloredPrettyPrint(v)
+		s, err = coloredPrettyPrint(v)
+	}
+	if err != nil {
+		log.Println("[ERROR] Failed to prettyprint message. Error:", s)
+		return
 	}
 
-	if createdAt != 0 {
-		latency := roundDuration(time.Since(millisToTime(createdAt)), time.Millisecond)
-		fmt.Printf("%s [%s] (latency: %s; %d bytes w/o pretty print):\n%s\n\n",
-			time.Now().Format(timestampMillisFormat), tag, latency, len(msg), string(s))
+	if !createdAt.IsZero() {
+		latency := roundDuration(time.Since(createdAt), time.Millisecond)
+		log.Printf("[%s] (latency: %s; %d bytes w/o pretty print):\n%s\n\n", tag, latency, len(msg), string(s))
 	} else {
-		fmt.Printf("%s [%s] (%d bytes w/o pretty print):\n%s\n\n",
-			time.Now().Format(timestampMillisFormat), tag, len(msg), string(s))
+		log.Printf("[%s] (%d bytes w/o pretty print):\n%s\n\n", tag, len(msg), string(s))
 	}
 }
 
 // Intercept 'ctrl-c' and remove the subscription before shutdown
-func setupSubscriptionRemoval(accessToken string, subscriptionIDOrName string) {
+func setupSubscriptionRemoval(subscriptionIDOrName string) {
 	sigs := make(chan os.Signal, 1)
 
 	// `signal.Notify` registers the given channel to
@@ -123,8 +125,20 @@ func setupSubscriptionRemoval(accessToken string, subscriptionIDOrName string) {
 	// signals.
 	go func() {
 		<-sigs
-		deleteSubscription(accessToken, subscriptionIDOrName)
-		disconnectWebsocket()
+		err := deleteSubscription(subscriptionIDOrName)
+		if err != nil {
+			log.Println("[ERROR] Failed to delete subscription. Error: ", err)
+		} else {
+			log.Println("[INFO] Deleted subscription ", subscriptionIDOrName)
+		}
+		err = disconnectWebsocket()
+		if err != nil {
+			log.Println("[ERROR] Failed to do clean websocket disconnect. Error: ", err)
+		} else {
+			log.Println("[INFO] Disconnected websocket connection")
+		}
+
+		// Exit with success code
 		os.Exit(0)
 	}()
 }
@@ -149,21 +163,31 @@ func requestAccessToken(clientID string, clientSecret string) (string, error) {
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := ioutil.ReadAll(resp.Body)
-
-	if resp.StatusCode != http.StatusOK {
-		return "", errors.New("")
+	respBody, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("Failed to read response body. Error: %v", err)
 	}
 
-	var g AuthResp
-	json.Unmarshal(respBody, &g)
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("Unexpected status code: %d", resp.StatusCode)
+	}
 
-	return g.AccessToken, nil
+	var authResponse struct {
+		AccessToken string `json:"access_token"`
+		ExpiresIn   int    `json:"expires_in"`
+		TokenType   string `json:"token_type"`
+	}
+	err = json.Unmarshal(respBody, &authResponse)
+	if err != nil {
+		return "", err
+	}
+
+	return authResponse.AccessToken, nil
 }
 
 func buildHTTPURLFromWSURL(wsURL string) string {
 	u, _ := url.Parse(wsURL)
-	var scheme = ""
+	var scheme string
 	if u.Scheme == "wss" {
 		scheme = "https"
 	} else {
@@ -188,19 +212,22 @@ func readSubscriptionSpec(fileName string) (Subscription, error) {
 }
 
 func validateFlags() error {
-	if *clientIDFlag == "" || *clientSecretFlag == "" {
-		return fmt.Errorf("You need to provide both '-client-id' and '-client-secret'")
+	// Check that auth credentials have been given.
+	if *clientV3SecretFlag == "" {
+		if *clientV2IDFlag == "" || *clientV2SecretFlag == "" {
+			return fmt.Errorf("You need to provide the API authentication credentials. '--secret' for v3 auth or '--client-id' and '--client-secret' for v2 auth")
+		}
 	}
 
+	// Check that a subscription specification has been given by either
+	// 1. A filename for a subscription spec
+	// 2. An id that points to an already existing subscription on the server-side
+	// 3. A reconnect token in order to connect to an existing subscriber
 	if *subscriptionFileFlag == "" && *subscriptionIDFlag == "" && *reconnectTokenFlag == "" {
-		return fmt.Errorf("You need to provide one of the options '-subscription-file', '-subscription-id' or '-reconnect-token'")
+		return fmt.Errorf("You need to provide one of the options '--subscription-file', '--subscription-id' or '--reconnect-token'")
 	}
 
 	return nil
-}
-
-func millisToTime(millis int64) time.Time {
-	return time.Unix(0, millis*int64(time.Millisecond))
 }
 
 // Taken from https://play.golang.org/p/QHocTHl8iR

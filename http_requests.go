@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"time"
@@ -12,41 +13,65 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-func connectToWebsocket(wsURL string, reconnectToken uuid.UUID, accessToken string, subscriptionIDOrName string) (*websocket.Conn, error) {
-	URL := wsURL + "?"
-	URL = URL + "access_token=" + accessToken
-	URL = URL + "&subscription_id=" + subscriptionIDOrName
+type WebsocketSetupHTTPError struct {
+	error
+	HttpStatus int
+}
+
+var httpClient = &http.Client{
+	Timeout: time.Second * 10,
+}
+
+func connectToWebsocket(wsURL string, reconnectToken uuid.UUID, subscriptionIDOrName string) (*websocket.Conn, error) {
+	URL := wsURL + "?subscription_id=" + subscriptionIDOrName
 	if reconnectToken != uuid.Nil {
 		URL = URL + "&reconnect_token=" + reconnectToken.String()
 	}
-	var dialer *websocket.Dialer
-	conn, resp, err := dialer.Dial(URL, nil)
 
-	if err == websocket.ErrBadHandshake {
-		fmt.Printf("%s [ERROR]: Failed to connect to WS url. Handshake status='%d'\n",
-			time.Now().Format(timestampMillisFormat), resp.StatusCode)
-		return nil, &WebsocketSetupHTTPError{HttpStatus: resp.StatusCode}
-	} else if err != nil {
-		fmt.Printf("%s [ERROR]: Failed to connect to WS url. Error='%s'\n",
-			time.Now().Format(timestampMillisFormat), err.Error())
-		return nil, err
+	// Add the auth credentials to the ws connection setup request
+	var h http.Header
+	if *clientV3SecretFlag != "" {
+		// Set the Abios secret as a header in the request
+		h = make(http.Header)
+		h["Abios-Secret"] = []string{*clientV3SecretFlag}
+	} else {
+		accessToken, err := requestAccessToken(*clientV2IDFlag, *clientV2SecretFlag)
+		if err != nil {
+			return nil, fmt.Errorf("Access token request failed. Error: %v", err)
+		}
+
+		URL = URL + "&access_token=" + accessToken
+	}
+
+	var dialer *websocket.Dialer
+	conn, resp, err := dialer.Dial(URL, h)
+	if err != nil {
+		if resp != nil {
+			return nil, WebsocketSetupHTTPError{HttpStatus: resp.StatusCode, error: err}
+		} else {
+			return nil, err
+		}
 	}
 
 	return conn, nil
 }
 
-func fetchPushServiceConfig(accessToken string) ([]byte, error) {
-	URL := buildHTTPURLFromWSURL(*addrFlag)
-	URL = URL + "/config"
-	URL = URL + "?access_token=" + accessToken
+func fetchPushServiceConfig() ([]byte, error) {
+	req, err := createAuthenticatedRequest(http.MethodGet, "/config", nil)
+	if err != nil {
+		return nil, err
+	}
 
-	resp, err := http.Get(URL)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := ioutil.ReadAll(resp.Body)
+	respBody, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("Unexpected status code: %d", resp.StatusCode)
@@ -55,18 +80,22 @@ func fetchPushServiceConfig(accessToken string) ([]byte, error) {
 	return respBody, err
 }
 
-func fetchSubscriptions(accessToken string) ([]byte, error) {
-	URL := buildHTTPURLFromWSURL(*addrFlag)
-	URL = URL + "/subscription"
-	URL = URL + "?access_token=" + accessToken
+func fetchSubscriptions() ([]byte, error) {
+	req, err := createAuthenticatedRequest(http.MethodGet, "/subscription", nil)
+	if err != nil {
+		return nil, err
+	}
 
-	resp, err := http.Get(URL)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := ioutil.ReadAll(resp.Body)
+	respBody, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("Unexpected status code: %d", resp.StatusCode)
@@ -75,27 +104,26 @@ func fetchSubscriptions(accessToken string) ([]byte, error) {
 	return respBody, err
 }
 
-func registerSubscription(accessToken string, sub Subscription) (uuid.UUID, bool, error) {
-	URL := buildHTTPURLFromWSURL(*addrFlag)
-	URL = URL + "/subscription"
-	URL = URL + "?access_token=" + accessToken
-
+func registerSubscription(sub Subscription) (uuid.UUID, bool, error) {
 	j, _ := json.Marshal(sub)
 
-	req, err := http.NewRequest("POST", URL, bytes.NewBuffer(j))
+	req, err := createAuthenticatedRequest(http.MethodPost, "/subscription", bytes.NewBuffer(j))
 	if err != nil {
 		return uuid.Nil, false, err
 	}
+
 	req.Header.Add("Content-Type", "application/json")
 
-	client := http.Client{}
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return uuid.Nil, false, err
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := ioutil.ReadAll(resp.Body)
+	respBody, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return uuid.Nil, false, err
+	}
 
 	// The subscription POST endpoint response have 2 normal status codes:
 	//  * Unprocessable Entity (422)
@@ -121,7 +149,7 @@ func registerSubscription(accessToken string, sub Subscription) (uuid.UUID, bool
 		// Server didn't set a valid ID in the 'Location' header, this should never happen
 		return uuid.Nil, true, fmt.Errorf("Subscription with name already exists, but failed to retrieve ID")
 	} else if resp.StatusCode != http.StatusOK {
-		return uuid.Nil, false, fmt.Errorf("Unexpected status code: %d", resp.StatusCode)
+		return uuid.Nil, false, fmt.Errorf("Unexpected status code: %d. Response message: %s", resp.StatusCode, string(respBody))
 	}
 
 	var s struct {
@@ -132,27 +160,30 @@ func registerSubscription(accessToken string, sub Subscription) (uuid.UUID, bool
 	return s.ID, false, err
 }
 
-func updateSubscription(accessToken string, sub Subscription) (uuid.UUID, bool, error) {
-	URL := buildHTTPURLFromWSURL(*addrFlag)
-	URL = URL + "/subscription/" + sub.ID.String()
-	URL = URL + "?access_token=" + accessToken
-
-	j, _ := json.Marshal(sub)
-
-	req, err := http.NewRequest("PUT", URL, bytes.NewBuffer(j))
+func updateSubscription(sub Subscription) (uuid.UUID, bool, error) {
+	endpoint := "/subscription/" + sub.ID.String()
+	j, err := json.Marshal(sub)
 	if err != nil {
 		return uuid.Nil, false, err
 	}
+
+	req, err := createAuthenticatedRequest(http.MethodPut, endpoint, bytes.NewBuffer(j))
+	if err != nil {
+		return uuid.Nil, false, err
+	}
+
 	req.Header.Add("Content-Type", "application/json")
 
-	client := http.Client{}
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return uuid.Nil, false, err
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := ioutil.ReadAll(resp.Body)
+	respBody, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return uuid.Nil, false, err
+	}
 
 	if resp.StatusCode == http.StatusUnprocessableEntity {
 		return uuid.Nil, true, nil
@@ -168,19 +199,16 @@ func updateSubscription(accessToken string, sub Subscription) (uuid.UUID, bool, 
 	return s.ID, false, err
 }
 
-func deleteSubscription(accessToken string, subscriptionIDOrName string) error {
-	URL := buildHTTPURLFromWSURL(*addrFlag)
-	URL = URL + "/subscription/" + subscriptionIDOrName
-	URL = URL + "?access_token=" + accessToken
-
-	req, err := http.NewRequest("DELETE", URL, nil)
+func deleteSubscription(subscriptionIDOrName string) error {
+	endpoint := "/subscription/" + subscriptionIDOrName
+	req, err := createAuthenticatedRequest(http.MethodDelete, endpoint, nil)
 	if err != nil {
 		return err
 	}
+
 	req.Header.Add("Content-Type", "application/json")
 
-	client := http.Client{}
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -191,5 +219,46 @@ func deleteSubscription(accessToken string, subscriptionIDOrName string) error {
 	}
 
 	return nil
+}
 
+func createAuthenticatedRequest(method string, endpoint string, body io.Reader) (*http.Request, error) {
+	url := buildHTTPURLFromWSURL(*addrFlag)
+	url = url + endpoint
+
+	req, err := http.NewRequest(method, url, body)
+	if err != nil {
+		return nil, err
+	}
+
+	if *clientV3SecretFlag != "" {
+		err = addV3Auth(req)
+	} else {
+		// Assume v2 auth token is used
+		err = addV2Auth(req)
+	}
+
+	return req, err
+}
+
+// Adds the required Atlas v3 API secret to the request
+func addV3Auth(req *http.Request) error {
+	// Set the Abios secret as a header in the request
+	req.Header["Abios-Secret"] = []string{*clientV3SecretFlag}
+
+	return nil
+}
+
+// Adds the required v2 API secret to the request
+func addV2Auth(req *http.Request) error {
+	// Create an access token from the client id and secret given on the command line
+	accessToken, err := requestAccessToken(*clientV2IDFlag, *clientV2SecretFlag)
+	if err != nil {
+		return fmt.Errorf("Access token request failed. Error: %v", err)
+	}
+
+	q := req.URL.Query()
+	q.Add("access_token", accessToken) // Add the access_token to the list of parameters
+	req.URL.RawQuery = q.Encode()      // Encode and assign back to the original query
+
+	return nil
 }

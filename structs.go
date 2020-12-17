@@ -1,6 +1,10 @@
 package main
 
-import "github.com/gofrs/uuid"
+import (
+	"time"
+
+	"github.com/gofrs/uuid"
+)
 
 // Base for all messages published to end-consumers
 type Message struct {
@@ -10,8 +14,8 @@ type Message struct {
 
 type PushMessage struct {
 	Message
-	CreatedTimestamp int64                  `json:"created_timestamp"`
-	Payload          map[string]interface{} `json:"payload"`
+	Created time.Time              `json:"created"`
+	Payload map[string]interface{} `json:"payload"`
 }
 
 // Base for messages sent on the 'system' channel
@@ -41,10 +45,4 @@ type SubscriptionFilter struct {
 	GameID   int    `json:"game_id,omitempty"`
 	SeriesID int    `json:"series_id,omitempty"`
 	MatchID  int    `json:"match_id,omitempty"`
-}
-
-type AuthResp struct {
-	AccessToken string `json:"access_token"`
-	ExpiresIn   int    `json:"expires_in"`
-	TokenType   string `json:"token_type"`
 }
