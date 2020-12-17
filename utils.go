@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -112,7 +114,7 @@ func printJsonWithTag(tag string, msg []byte) {
 }
 
 // Intercept 'ctrl-c' and remove the subscription before shutdown
-func setupSubscriptionRemoval(secret string, subscriptionIDOrName string) {
+func setupSubscriptionRemoval(subscriptionIDOrName string) {
 	sigs := make(chan os.Signal, 1)
 
 	// `signal.Notify` registers the given channel to
@@ -139,6 +141,48 @@ func setupSubscriptionRemoval(secret string, subscriptionIDOrName string) {
 		// Exit with success code
 		os.Exit(0)
 	}()
+}
+
+func requestAccessToken(clientID string, clientSecret string) (string, error) {
+	URL := *apiURLFlag + "/oauth/access_token"
+	form := url.Values{}
+	form.Add("client_id", clientID)
+	form.Add("client_secret", clientSecret)
+	form.Add("grant_type", "client_credentials")
+
+	req, err := http.NewRequest("POST", URL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+
+	client := http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("Failed to read response body. Error: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("Unexpected status code: %d", resp.StatusCode)
+	}
+
+	var authResponse struct {
+		AccessToken string `json:"access_token"`
+		ExpiresIn   int    `json:"expires_in"`
+		TokenType   string `json:"token_type"`
+	}
+	err = json.Unmarshal(respBody, &authResponse)
+	if err != nil {
+		return "", err
+	}
+
+	return authResponse.AccessToken, nil
 }
 
 func buildHTTPURLFromWSURL(wsURL string) string {
@@ -168,10 +212,17 @@ func readSubscriptionSpec(fileName string) (Subscription, error) {
 }
 
 func validateFlags() error {
-	if *clientSecretFlag == "" {
-		return fmt.Errorf("You need to provide your secret key with '--secret'")
+	// Check that auth credentials have been given.
+	if *clientV3SecretFlag == "" {
+		if *clientV2IDFlag == "" || *clientV2SecretFlag == "" {
+			return fmt.Errorf("You need to provide the API authentication credentials. '--secret' for v3 auth or '--client-id' and '--client-secret' for v2 auth")
+		}
 	}
 
+	// Check that a subscription specification has been given by either
+	// 1. A filename for a subscription spec
+	// 2. An id that points to an already existing subscription on the server-side
+	// 3. A reconnect token in order to connect to an existing subscriber
 	if *subscriptionFileFlag == "" && *subscriptionIDFlag == "" && *reconnectTokenFlag == "" {
 		return fmt.Errorf("You need to provide one of the options '--subscription-file', '--subscription-id' or '--reconnect-token'")
 	}

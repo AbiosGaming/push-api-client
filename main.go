@@ -13,12 +13,20 @@ import (
 	flag "github.com/spf13/pflag"
 )
 
-var addrFlag = flag.String("addr", "wss://ws.abiosgaming.com/v0", "ws server address")
+// Command-line options
 var subscriptionFileFlag = flag.String("subscription-file", "", "A file containing the subscription specification")
 var subscriptionIDFlag = flag.String("subscription-id", "", "The id of a subscription that has been registered previously")
-var clientSecretFlag = flag.String("secret", "", "The v3 authentication secret")
 var reconnectTokenFlag = flag.String("reconnect-token", "", "Use token to reconnect to previous subscriber state")
 var noPPFlag = flag.Bool("no-pp", false, "Disable colorized pretty-print of JSON data")
+var addrFlag = flag.String("addr", "wss://ws.abiosgaming.com/v0", "ws server address")
+
+// Command-line options only useful with v3 authentication
+var clientV3SecretFlag = flag.String("secret", "", "The v3 authentication secret")
+
+// Command-line options only useful with v2 authentication
+var apiURLFlag = flag.String("access-token-url", "https://api.abiosgaming.com/v2", "URL for the access token creation")
+var clientV2IDFlag = flag.String("client-id", "", "Use client id for creating the access token, only for v2 authentication")
+var clientV2SecretFlag = flag.String("client-secret", "", "The v2 authentication secret")
 
 var subscriptionIDOrName string
 var currReconnectToken uuid.UUID
@@ -31,10 +39,8 @@ func main() {
 
 	err := validateFlags()
 	if err != nil {
-		log.Fatalln("[ERROR]", err)
+		log.Fatalln("[ERROR] ", err)
 	}
-
-	secret := *clientSecretFlag
 
 	// Let's look at our configuration. The information is only printed
 	// to the terminal for debugging purposes, not used in any other way
@@ -58,7 +64,7 @@ func main() {
 	// already has been registered the existing subscription is updated
 	// with the content of the supplied file.
 	var wasUpdated bool
-	subscriptionIDOrName, wasUpdated, err = registerOrUpdateSubscription(secret)
+	subscriptionIDOrName, wasUpdated, err = registerOrUpdateSubscription()
 	if err != nil {
 		log.Fatalln("[ERROR] Failed to register or update subscription. Error: ", err)
 	}
@@ -67,7 +73,7 @@ func main() {
 	// when we exit.
 	// But make sure to NOT delete it if the subscription already existed.
 	if !wasUpdated {
-		setupSubscriptionRemoval(secret, subscriptionIDOrName)
+		setupSubscriptionRemoval(subscriptionIDOrName)
 	}
 
 	// Parse the reconnect token given on the command line
@@ -77,7 +83,7 @@ func main() {
 	// Now we have an access token and a registered subscription id/name we want to
 	// connect to, the websocket can be created.
 	// This will connect and wait for the init message response from the server
-	conn, err = setupPushServiceConnection(secret, reconnectToken, subscriptionIDOrName)
+	conn, err = setupPushServiceConnection(reconnectToken, subscriptionIDOrName)
 	if err != nil {
 		log.Fatalln("[ERROR] Failed to connect to push service. Error: ", err)
 	}
@@ -87,7 +93,7 @@ func main() {
 
 	// We start the infinite read loop as a separate go routine to simplify
 	// the reconnect logic.
-	go messageReadLoop(secret)
+	go messageReadLoop()
 
 	// Infinite wait here, use ctrl-c to kill program
 	wg := sync.WaitGroup{}
@@ -95,10 +101,10 @@ func main() {
 	wg.Wait()
 }
 
-func setupPushServiceConnection(secret string, reconnectToken uuid.UUID, subscriptionIDOrName string) (*websocket.Conn, error) {
+func setupPushServiceConnection(reconnectToken uuid.UUID, subscriptionIDOrName string) (*websocket.Conn, error) {
 	// Connect the websocket to start receiving events that match
 	// the subscription filters we set up previously
-	conn, err := websocketConnectLoop(secret, reconnectToken, subscriptionIDOrName)
+	conn, err := websocketConnectLoop(reconnectToken, subscriptionIDOrName)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +129,7 @@ func setupPushServiceConnection(secret string, reconnectToken uuid.UUID, subscri
 	return conn, nil
 }
 
-func websocketConnectLoop(secret string, reconnectToken uuid.UUID, subscriptionIDOrName string) (*websocket.Conn, error) {
+func websocketConnectLoop(reconnectToken uuid.UUID, subscriptionIDOrName string) (*websocket.Conn, error) {
 	var conn *websocket.Conn
 	for {
 		var err error
@@ -200,7 +206,7 @@ func readInitMessage(conn *websocket.Conn) ([]byte, error) {
 // If the websocket is closed it will automatically re-establish the
 // connection using the reconnect token to ensure no messages were lost
 // during the disconnect.
-func messageReadLoop(secret string) {
+func messageReadLoop() {
 	// From here on we will start receiving push events that match our
 	// subscription filters
 	for {
@@ -211,7 +217,7 @@ func messageReadLoop(secret string) {
 			log.Println("[INFO] Websocket was closed, starting reconnect loop. Reason: ", closeErr)
 
 			// Reassign the global variable 'conn' with the new websocket handle
-			conn, err = setupPushServiceConnection(secret, currReconnectToken, subscriptionIDOrName)
+			conn, err = setupPushServiceConnection(currReconnectToken, subscriptionIDOrName)
 			if err != nil {
 				log.Fatalln("[ERROR] Failed to connect to push service. Error: ", err)
 			}
@@ -257,7 +263,7 @@ func keepAliveLoop() {
 	}
 }
 
-func registerOrUpdateSubscription(secret string) (string, bool, error) {
+func registerOrUpdateSubscription() (string, bool, error) {
 	var subscriptionIDOrName string
 	var sub Subscription
 	var err error

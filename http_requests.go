@@ -28,9 +28,20 @@ func connectToWebsocket(wsURL string, reconnectToken uuid.UUID, subscriptionIDOr
 		URL = URL + "&reconnect_token=" + reconnectToken.String()
 	}
 
-	// Set the Abios secret as a header in the request
-	var h http.Header = make(http.Header)
-	h["Abios-Secret"] = []string{*clientSecretFlag}
+	// Add the auth credentials to the ws connection setup request
+	var h http.Header
+	if *clientV3SecretFlag != "" {
+		// Set the Abios secret as a header in the request
+		h = make(http.Header)
+		h["Abios-Secret"] = []string{*clientV3SecretFlag}
+	} else {
+		accessToken, err := requestAccessToken(*clientV2IDFlag, *clientV2SecretFlag)
+		if err != nil {
+			return nil, fmt.Errorf("Access token request failed. Error: %v", err)
+		}
+
+		URL = URL + "&access_token=" + accessToken
+	}
 
 	var dialer *websocket.Dialer
 	conn, resp, err := dialer.Dial(URL, h)
@@ -44,21 +55,6 @@ func connectToWebsocket(wsURL string, reconnectToken uuid.UUID, subscriptionIDOr
 	}
 
 	return conn, nil
-}
-
-func createAuthenticatedRequest(method string, endpoint string, body io.Reader) (*http.Request, error) {
-	url := buildHTTPURLFromWSURL(*addrFlag)
-	url = url + endpoint
-
-	req, err := http.NewRequest(method, url, body)
-	if err != nil {
-		return nil, err
-	}
-
-	// Set the Abios secret as a header in the request
-	req.Header["Abios-Secret"] = []string{*clientSecretFlag}
-
-	return req, nil
 }
 
 func fetchPushServiceConfig() ([]byte, error) {
@@ -207,6 +203,48 @@ func deleteSubscription(subscriptionIDOrName string) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("Unexpected status code: %d", resp.StatusCode)
 	}
+
+	return nil
+}
+
+func createAuthenticatedRequest(method string, endpoint string, body io.Reader) (*http.Request, error) {
+	url := buildHTTPURLFromWSURL(*addrFlag)
+	url = url + endpoint
+
+	req, err := http.NewRequest(method, url, body)
+	if err != nil {
+		return nil, err
+	}
+
+	if *clientV3SecretFlag != "" {
+		err = addV3Auth(req)
+	} else {
+		// Assume v2 auth token is used
+		err = addV2Auth(req)
+	}
+
+	return req, err
+}
+
+// Adds the required Atlas v3 API secret to the request
+func addV3Auth(req *http.Request) error {
+	// Set the Abios secret as a header in the request
+	req.Header["Abios-Secret"] = []string{*clientV3SecretFlag}
+
+	return nil
+}
+
+// Adds the required v2 API secret to the request
+func addV2Auth(req *http.Request) error {
+	// Create an access token from the client id and secret given on the command line
+	accessToken, err := requestAccessToken(*clientV2IDFlag, *clientV2SecretFlag)
+	if err != nil {
+		return fmt.Errorf("Access token request failed. Error: %v", err)
+	}
+
+	q := req.URL.Query()
+	q.Add("access_token", accessToken) // Add the access_token to the list of parameters
+	req.URL.RawQuery = q.Encode()      // Encode and assign back to the original query
 
 	return nil
 }
