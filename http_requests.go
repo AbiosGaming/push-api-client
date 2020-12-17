@@ -45,7 +45,6 @@ func connectToWebsocket(wsURL string, reconnectToken uuid.UUID, subscriptionIDOr
 
 	var dialer *websocket.Dialer
 	conn, resp, err := dialer.Dial(URL, h)
-
 	if err != nil {
 		if resp != nil {
 			return nil, WebsocketSetupHTTPError{HttpStatus: resp.StatusCode, error: err}
@@ -69,7 +68,10 @@ func fetchPushServiceConfig() ([]byte, error) {
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := ioutil.ReadAll(resp.Body)
+	respBody, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("Unexpected status code: %d", resp.StatusCode)
@@ -90,7 +92,10 @@ func fetchSubscriptions() ([]byte, error) {
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := ioutil.ReadAll(resp.Body)
+	respBody, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("Unexpected status code: %d", resp.StatusCode)
@@ -115,7 +120,10 @@ func registerSubscription(sub Subscription) (uuid.UUID, bool, error) {
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := ioutil.ReadAll(resp.Body)
+	respBody, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return uuid.Nil, false, err
+	}
 
 	// The subscription POST endpoint response have 2 normal status codes:
 	//  * Unprocessable Entity (422)
@@ -154,7 +162,10 @@ func registerSubscription(sub Subscription) (uuid.UUID, bool, error) {
 
 func updateSubscription(sub Subscription) (uuid.UUID, bool, error) {
 	endpoint := "/subscription/" + sub.ID.String()
-	j, _ := json.Marshal(sub)
+	j, err := json.Marshal(sub)
+	if err != nil {
+		return uuid.Nil, false, err
+	}
 
 	req, err := createAuthenticatedRequest(http.MethodPut, endpoint, bytes.NewBuffer(j))
 	if err != nil {
@@ -169,7 +180,10 @@ func updateSubscription(sub Subscription) (uuid.UUID, bool, error) {
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := ioutil.ReadAll(resp.Body)
+	respBody, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return uuid.Nil, false, err
+	}
 
 	if resp.StatusCode == http.StatusUnprocessableEntity {
 		return uuid.Nil, true, nil
