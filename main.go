@@ -144,6 +144,8 @@ func websocketConnectLoop(reconnectToken uuid.UUID, subscriptionIDOrName string)
 					backoffSeconds := 30
 					log.Println(fmt.Sprintf("[WARN] Client is rate-limited, retrying in %d seconds. Error: ", backoffSeconds), err)
 					time.Sleep(time.Second * time.Duration(backoffSeconds))
+				} else {
+					return nil, fmt.Errorf("Websocket connection setup failed. Error: %v", v.error)
 				}
 			default:
 				// Couldn't connect, try again in a while
