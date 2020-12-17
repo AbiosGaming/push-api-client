@@ -24,7 +24,7 @@ To start the client do:
 
  `$ ./push-api-client --secret=$CLIENT_SECRET --subscription-file=sample_subscription_v3.json`
 
-where `CLIENT_SECRET` is the same that you already use to access v3 of the abios REST API . The `sample_subscription_v3.json` file contains a simple subscription specification that will listen to all events from the `series_updates` channel (for the games your account has access to). 
+where `CLIENT_SECRET` is the same that you already use to access v3 of the Abios REST API . The `sample_subscription_v3.json` file contains a simple subscription specification that will listen to all events from the `series_updates` channel (for the games your account has access to).
 
 ### With v2 API authentication client id/secret 
 
