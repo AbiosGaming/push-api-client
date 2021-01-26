@@ -16,6 +16,7 @@ import (
 // Command-line options
 var subscriptionFileFlag = flag.String("subscription-file", "", "A file containing the subscription specification")
 var subscriptionIDFlag = flag.String("subscription-id", "", "The id of a subscription that has been registered previously")
+var keepSubscription = flag.Bool("keep-subscription", false, "Do not delete subscription on exit if a new one was created")
 var reconnectTokenFlag = flag.String("reconnect-token", "", "Use token to reconnect to previous subscriber state")
 var noPPFlag = flag.Bool("no-pp", false, "Disable colorized pretty-print of JSON data")
 var addrFlag = flag.String("addr", "wss://ws.abiosgaming.com/v0", "ws server address")
@@ -59,22 +60,34 @@ func main() {
 
 	printJsonWithTag("EXISTING SUBSCRIPTIONS", subs)
 
-	// If a subscription spec file has been supplied it will be registered
-	// with the push service. If the subscription has a name and that name
-	// already has been registered the existing subscription is updated
-	// with the content of the supplied file.
-	var wasUpdated bool
-	subscriptionIDOrName, wasUpdated, err = registerOrUpdateSubscription()
-	if err != nil {
-		log.Fatalln("[ERROR] Failed to register or update subscription. Error: ", err)
+	removeSubOnExit := false
+	if *subscriptionIDFlag != "" {
+		// Subscribe to an already existing subscription.
+		// Either uses the subscription id or the subscription name.
+		subscriptionIDOrName = *subscriptionIDFlag
+	} else if *subscriptionFileFlag != "" {
+		// If a subscription spec file has been supplied it will be registered
+		// with the push service. If the subscription has a name and that name
+		// already has been registered the existing subscription is updated
+		// with the content of the supplied file.
+		var existed bool
+		subscriptionIDOrName, existed, err = registerOrUpdateSubscription(*subscriptionFileFlag)
+		if err != nil {
+			log.Fatalln("[ERROR] Failed to register or update subscription. Error: ", err)
+		}
+
+		// For this test client we'll delete the subscription
+		// when we exit.
+		// Make sure to NOT delete it if the subscription already existed.
+		// And don't delete new subscriptions if the '--keep-subscription' cli flag was used.
+		if !existed && !*keepSubscription {
+			removeSubOnExit = true
+		}
 	}
 
-	// For this test client we'll delete the subscription
-	// when we exit.
-	// But make sure to NOT delete it if the subscription already existed.
-	if !wasUpdated {
-		setupSubscriptionRemoval(subscriptionIDOrName)
-	}
+	// Setup handling of ctrl-c, closes the websocket connection and
+	// deletes the subscription from the server if wanted.
+	setupShutdownHandler(subscriptionIDOrName, removeSubOnExit)
 
 	// Parse the reconnect token given on the command line
 	// and initialize the global variable with it
@@ -265,45 +278,34 @@ func keepAliveLoop() {
 	}
 }
 
-func registerOrUpdateSubscription() (string, bool, error) {
-	var subscriptionIDOrName string
-	var sub Subscription
-	var err error
-	var alreadyExists bool
-	if *subscriptionFileFlag != "" {
-		// Read subscription specification from file
-		sub, err = readSubscriptionSpec(*subscriptionFileFlag)
-		if err != nil {
-			return "", false, fmt.Errorf("Could not read subscription spec from file. Error=%v", err)
-		}
-
-		// Register the subscription specification with the push service
-		var subscriptionID uuid.UUID
-		subscriptionID, alreadyExists, err = registerSubscription(sub)
-		if err != nil {
-			return "", false, fmt.Errorf("Subscription registration request failed. Error: %v", err)
-		}
-
-		if alreadyExists {
-			log.Printf("[INFO]: A subscription with name '%s' already exists, updating it.\n", sub.Name)
-
-			sub.ID = subscriptionID
-			_, _, err = updateSubscription(sub)
-			if err != nil {
-				return "", false, fmt.Errorf("Failed to update subscription. Error: %v", err)
-			}
-		} else {
-			if sub.Name != "" {
-				log.Printf("[INFO]: Registered the subscription with name '%s' (ID=%s).\n", sub.Name, subscriptionID)
-			} else {
-				log.Printf("[INFO]: Registered the subscription. ID=%s.\n", subscriptionID)
-			}
-		}
-
-		subscriptionIDOrName = subscriptionID.String()
-	} else if *subscriptionIDFlag != "" {
-		subscriptionIDOrName = *subscriptionIDFlag
+func registerOrUpdateSubscription(fileName string) (string, bool, error) {
+	// Read subscription specification from file
+	sub, err := readSubscriptionSpec(fileName)
+	if err != nil {
+		return "", false, fmt.Errorf("Could not read subscription spec from file. Error=%v", err)
 	}
 
-	return subscriptionIDOrName, alreadyExists, nil
+	// Register the subscription specification with the push service
+	subscriptionID, alreadyExists, err := registerSubscription(sub)
+	if err != nil {
+		return "", false, fmt.Errorf("Subscription registration request failed. Error: %v", err)
+	}
+
+	if alreadyExists {
+		log.Printf("[INFO]: A subscription with name '%s' already exists, updating it.\n", sub.Name)
+
+		sub.ID = subscriptionID
+		_, _, err = updateSubscription(sub)
+		if err != nil {
+			return "", false, fmt.Errorf("Failed to update subscription. Error: %v", err)
+		}
+	} else {
+		if sub.Name != "" {
+			log.Printf("[INFO]: Registered the subscription with name '%s' (ID=%s).\n", sub.Name, subscriptionID)
+		} else {
+			log.Printf("[INFO]: Registered the subscription. ID=%s.\n", subscriptionID)
+		}
+	}
+
+	return subscriptionID.String(), alreadyExists, nil
 }

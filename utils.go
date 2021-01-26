@@ -113,8 +113,8 @@ func printJsonWithTag(tag string, msg []byte) {
 	}
 }
 
-// Intercept 'ctrl-c' and remove the subscription before shutdown
-func setupSubscriptionRemoval(subscriptionIDOrName string) {
+// Intercept 'ctrl-c' and remove the subscription before shutdown if needed
+func setupShutdownHandler(subscriptionIDOrName string, doRemoveSubscription bool) {
 	sigs := make(chan os.Signal, 1)
 
 	// `signal.Notify` registers the given channel to
@@ -125,13 +125,17 @@ func setupSubscriptionRemoval(subscriptionIDOrName string) {
 	// signals.
 	go func() {
 		<-sigs
-		err := deleteSubscription(subscriptionIDOrName)
-		if err != nil {
-			log.Println("[ERROR] Failed to delete subscription. Error: ", err)
-		} else {
-			log.Println("[INFO] Deleted subscription ", subscriptionIDOrName)
+
+		if doRemoveSubscription {
+			err := deleteSubscription(subscriptionIDOrName)
+			if err != nil {
+				log.Println("[ERROR] Failed to delete subscription. Error: ", err)
+			} else {
+				log.Println("[INFO] Deleted subscription ", subscriptionIDOrName)
+			}
 		}
-		err = disconnectWebsocket()
+
+		err := disconnectWebsocket()
 		if err != nil {
 			log.Println("[ERROR] Failed to do clean websocket disconnect. Error: ", err)
 		} else {
