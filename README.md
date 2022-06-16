@@ -1,4 +1,4 @@
-# push-api-client
+# push-api-client [deprecated, end of life @ 20220921]
 A demo websocket client showing how to subscribe to Abios' data pushes using either v3 or v2 authentication credentials. Documentation for the Abios push API can be found [in the Abios developer hub](https://abiosgaming.com/docs/en/push-api/introduction/overview).
 
 ## Requirements
